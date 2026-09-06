@@ -1,177 +1,216 @@
 /**
- * The picker, real v0: the "file-scoped pick one" fallback @precedence/cli's
- * README already documents as one of the picker's three resolution modes —
- * not click-on-the-page DOM picking (that needs the stamp loader wired into
- * the target's bundler config, or React's dev-mode _debugSource fiber, and
- * this wizard doesn't touch either yet). A searchable tree over the real
- * catalog, served locally, no framework, no external requests: everything
- * needed to render is embedded in the one page this serves.
+ * The picker: real click-on-the-page DOM picking, against the developer's
+ * actual running app — not a page we render ourselves.
  *
- * Flow: start a local server, serve the page + catalog, wait for the picker's
- * "Save & continue" POST, write plan.json, shut down. Ctrl+C or closing the
- * tab without saving just leaves no plan.json — same fallback the CLI already
- * had (rerun later) still applies.
+ * A bookmarklet injects an overlay script into whatever page is currently
+ * open. On click, it walks up from the DOM node to the nearest React fiber
+ * and reads `_debugSource` (file + line, set by the classic Babel/React dev
+ * transform) to resolve it to a catalog element, same resolution rung
+ * @precedence/cli's own README documents (stamp loader -> fiber -> a
+ * file-scoped fallback; this is the fiber rung — no bundler config edited,
+ * no stamp loader required). On a build where `_debugSource` isn't present
+ * (SWC, Next.js's default compiler, React 19), the overlay says so plainly
+ * instead of guessing.
+ *
+ * The overlay talks back to this local server (CORS-enabled, since it runs
+ * on the target app's own origin, not ours) to fetch the catalog and POST
+ * the finished plan.
  */
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
-import { execFile } from "node:child_process";
 import type { Catalog } from "@precedence/cli";
 
-function openBrowser(url: string): void {
-  // Windows' "start" is a cmd.exe builtin, not a real executable — invoke it
-  // through cmd.exe directly (no shell:true) so args are never re-parsed by a shell.
-  const [cmd, args] = process.platform === "win32" ? ["cmd", ["/c", "start", "", url]]
-    : process.platform === "darwin" ? ["open", [url]]
-    : ["xdg-open", [url]];
-  try { execFile(cmd, args); } catch { /* best-effort only */ }
-}
+const cors = (res: http.ServerResponse) => {
+  res.setHeader("access-control-allow-origin", "*");
+  res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+  res.setHeader("access-control-allow-headers", "content-type");
+};
 
-const PAGE = (catalogJson: string) => `<!doctype html>
-<html><head><meta charset="utf-8"><title>Precedence picker</title>
-<style>
-  body { font: 14px -apple-system, Segoe UI, sans-serif; margin: 0; display: flex; height: 100vh; color: #1a1a1a; }
-  #tree { width: 60%; overflow: auto; padding: 16px; border-right: 1px solid #ddd; }
-  #plan { width: 40%; overflow: auto; padding: 16px; background: #fafafa; }
-  #search { width: 100%; padding: 8px; box-sizing: border-box; margin-bottom: 12px; font-size: 14px; }
-  .file { font-weight: 600; margin-top: 16px; }
-  .comp { margin-left: 12px; color: #555; margin-top: 8px; }
-  .branch { margin-left: 24px; padding: 4px 8px; cursor: pointer; border-radius: 4px; display: flex; justify-content: space-between; }
-  .branch:hover { background: #eef; }
-  .branch.added { background: #e6f7e6; }
-  .fires { color: #888; font-size: 12px; }
-  .plan-item { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 10px; margin-bottom: 10px; }
-  .plan-item input[type=text] { width: 100%; box-sizing: border-box; padding: 4px; margin: 4px 0; }
-  .plan-item label { display: block; font-size: 12px; }
-  button { cursor: pointer; }
-  #save { width: 100%; padding: 10px; margin-top: 12px; background: #1a1a1a; color: #fff; border: none; border-radius: 6px; font-size: 14px; }
-  #save:disabled { background: #999; }
-  .remove { color: #c00; background: none; border: none; cursor: pointer; font-size: 12px; }
-</style></head>
-<body>
-  <div id="tree">
-    <input id="search" placeholder="filter by component, action, event name…">
-    <div id="list"></div>
-  </div>
-  <div id="plan">
-    <h3>Plan (<span id="count">0</span> events)</h3>
-    <div id="items"></div>
-    <button id="save" disabled>Save &amp; continue</button>
-  </div>
-<script>
-const catalog = ${catalogJson};
-const plan = new Map(); // anchor id -> { name, properties: Set, allProps, fingerprint }
-
-function branchNodes(el, action, b, path) {
-  const nodes = [{ el, action, b, path: path.concat(b.path) }];
-  for (const c of b.children) nodes.push(...branchNodes(el, action, c, path.concat(b.path)));
-  return nodes;
-}
-
-function allEntries() {
-  const out = [];
-  for (const el of catalog.elements) {
-    for (const action of el.actions) {
-      if (action.synthetic) {
-        out.push({ el, action, kind: "action", id: action.attachId, fingerprint: action.fingerprint,
-          label: action.suggestedName, fires: action.firesWhen, props: action.candidateProps });
-      }
-      for (const b of action.branches) {
-        for (const n of branchNodes(el, action, b, [])) {
-          out.push({ el, action: n.action, kind: "branch", id: n.b.id, fingerprint: n.b.fingerprint,
-            label: n.b.suggestedName, fires: n.b.firesWhen, props: n.b.candidateProps });
-        }
+/**
+ * The actual resolution algorithm — real, typed, unit-tested (see
+ * test/invariants.mjs) — not prose inside a template string. Embedded into
+ * the browser overlay via `.toString()`, so the tested code and the shipped
+ * code are provably the same text, not a hand-kept-in-sync copy.
+ */
+export function fiberSource(node: unknown): { fileName: string; lineNumber: number } | null {
+  let n = node as (Record<string, unknown> & { parentElement?: unknown }) | null;
+  while (n) {
+    const key = Object.keys(n).find((k) => k.startsWith("__reactFiber$") || k.startsWith("__reactInternalInstance$"));
+    if (key) {
+      let fiber = n[key] as { _debugSource?: { fileName: string; lineNumber: number }; return?: unknown } | undefined;
+      while (fiber) {
+        if (fiber._debugSource) return fiber._debugSource;
+        fiber = fiber.return as typeof fiber;
       }
     }
+    n = (n.parentElement as typeof n) || null;
   }
+  return null;
+}
+
+export function findElement(catalog: Catalog, fileName: string, line: number): Catalog["elements"][number] | null {
+  const norm = fileName.replace(/\\/g, "/");
+  for (const el of catalog.elements) {
+    if (norm.slice(-el.file.length) !== el.file) continue;
+    if (Math.abs(el.line - line) > 2) continue;
+    return el;
+  }
+  return null;
+}
+
+const OVERLAY = (wizardOrigin: string) => `(function(){
+if (window.__pmPickerLoaded) return; window.__pmPickerLoaded = true;
+var WIZARD = ${JSON.stringify(wizardOrigin)};
+var catalog = null, active = false;
+var plan = new Map();
+
+var box = document.createElement("div");
+box.style.cssText = "position:fixed;pointer-events:none;z-index:2147483646;border:2px solid #4f46e5;background:rgba(79,70,229,.08);display:none;";
+document.body.appendChild(box);
+
+var panel = document.createElement("div");
+panel.style.cssText = "position:fixed;top:0;right:0;width:340px;height:100vh;background:#fff;border-left:1px solid #ddd;z-index:2147483647;font:13px -apple-system,Segoe UI,sans-serif;overflow:auto;box-shadow:-2px 0 12px rgba(0,0,0,.15);display:none;color:#1a1a1a;";
+panel.innerHTML =
+  '<div style="padding:12px;border-bottom:1px solid #eee;font-weight:600">Precedence picker' +
+  '<div style="font-weight:400;font-size:11px;color:#888;margin-top:2px">Alt+Shift+P to toggle &middot; click an element</div></div>' +
+  '<div id="pm-body" style="padding:12px;color:#888">Click an element to inspect it.</div>' +
+  '<div id="pm-plan" style="padding:0 12px"></div>' +
+  '<button id="pm-save" style="margin:12px;padding:8px;width:calc(100% - 24px);cursor:pointer" disabled>Save &amp; continue</button>';
+document.body.appendChild(panel);
+
+function toggle() {
+  active = !active;
+  panel.style.display = active ? "block" : "none";
+  if (!active) box.style.display = "none";
+}
+document.addEventListener("keydown", function (e) {
+  if (e.altKey && e.shiftKey && e.key.toLowerCase() === "p") toggle();
+});
+
+document.addEventListener("mousemove", function (e) {
+  if (!active || panel.contains(e.target)) { box.style.display = "none"; return; }
+  var r = e.target.getBoundingClientRect();
+  box.style.display = "block";
+  box.style.left = r.left + "px"; box.style.top = r.top + "px";
+  box.style.width = r.width + "px"; box.style.height = r.height + "px";
+}, true);
+
+var fiberSource = ${fiberSource.toString()};
+var findElement = ${findElement.toString()};
+
+function flatten(bs, out) {
+  out = out || [];
+  for (var i = 0; i < bs.length; i++) { out.push(bs[i]); flatten(bs[i].children, out); }
   return out;
 }
-const entries = allEntries();
 
-function render(filter) {
-  const list = document.getElementById("list");
-  list.innerHTML = "";
-  const q = (filter || "").toLowerCase();
-  let lastFile = null, lastComp = null;
-  for (const e of entries) {
-    const hay = (e.el.file + " " + e.el.component + " " + e.action.name + " " + e.label).toLowerCase();
-    if (q && !hay.includes(q)) continue;
-    if (e.el.file !== lastFile) {
-      const h = document.createElement("div"); h.className = "file"; h.textContent = e.el.file;
-      list.appendChild(h); lastFile = e.el.file; lastComp = null;
-    }
-    if (e.el.component !== lastComp) {
-      const h = document.createElement("div"); h.className = "comp"; h.textContent = e.el.component + " · " + e.el.tag;
-      list.appendChild(h); lastComp = e.el.component;
-    }
-    const row = document.createElement("div");
-    row.className = "branch" + (plan.has(e.id) ? " added" : "");
-    row.innerHTML = "<span>" + e.action.name + " → " + e.label + "</span><span class=\\"fires\\">" + (plan.has(e.id) ? "added" : "+ add") + "</span>";
-    row.onclick = () => { addToPlan(e); render(document.getElementById("search").value); };
-    list.appendChild(row);
-  }
+function renderBody(el) {
+  var body = document.getElementById("pm-body");
+  body.innerHTML = "";
+  var h = document.createElement("div");
+  h.innerHTML = "<b>" + el.component + "</b> &middot; " + el.tag;
+  body.appendChild(h);
+  el.actions.forEach(function (action) {
+    flatten(action.branches).forEach(function (b) {
+      var row = document.createElement("div");
+      row.style.cssText = "padding:6px 8px;margin-top:6px;border:1px solid #eee;border-radius:4px;cursor:pointer;display:flex;justify-content:space-between;";
+      row.innerHTML = "<span>" + action.name + " &rarr; " + b.suggestedName + "</span><span style='color:#888;font-size:11px'>" + (plan.has(b.id) ? "added" : "+ add") + "</span>";
+      row.onclick = function () { addToPlan(b); renderBody(el); };
+      body.appendChild(row);
+    });
+  });
 }
 
-function addToPlan(e) {
-  if (plan.has(e.id)) return;
-  plan.set(e.id, { name: e.label, properties: new Set(e.props.map(p => p.name)), allProps: e.props.map(p => p.name), fingerprint: e.fingerprint });
+function addToPlan(b) {
+  if (plan.has(b.id)) return;
+  plan.set(b.id, { name: b.suggestedName, properties: new Set(b.candidateProps.map(function (p) { return p.name; })),
+    allProps: b.candidateProps.map(function (p) { return p.name; }), fingerprint: b.fingerprint });
   renderPlan();
 }
-function removeFromPlan(id) { plan.delete(id); renderPlan(); render(document.getElementById("search").value); }
+function removeFromPlan(id) { plan.delete(id); renderPlan(); }
 
 function renderPlan() {
-  const items = document.getElementById("items");
-  items.innerHTML = "";
-  document.getElementById("count").textContent = plan.size;
-  document.getElementById("save").disabled = plan.size === 0;
-  for (const [id, entry] of plan) {
-    const div = document.createElement("div"); div.className = "plan-item";
-    const nameInput = document.createElement("input");
-    nameInput.type = "text"; nameInput.value = entry.name;
-    nameInput.oninput = () => { entry.name = nameInput.value; };
-    div.appendChild(nameInput);
-    for (const p of entry.allProps) {
-      const label = document.createElement("label");
-      const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = entry.properties.has(p);
-      cb.onchange = () => { cb.checked ? entry.properties.add(p) : entry.properties.delete(p); };
-      label.appendChild(cb); label.appendChild(document.createTextNode(" " + p));
-      div.appendChild(label);
-    }
-    const rm = document.createElement("button"); rm.className = "remove"; rm.textContent = "remove";
-    rm.onclick = () => removeFromPlan(id);
-    div.appendChild(rm);
-    items.appendChild(div);
-  }
+  var box2 = document.getElementById("pm-plan");
+  box2.innerHTML = "<b>Plan (" + plan.size + ")</b>";
+  plan.forEach(function (e, id) {
+    var d = document.createElement("div");
+    d.style.cssText = "background:#fafafa;border:1px solid #ddd;border-radius:6px;padding:8px;margin:8px 0;";
+    var inp = document.createElement("input");
+    inp.type = "text"; inp.value = e.name; inp.style.cssText = "width:100%;box-sizing:border-box;padding:4px;";
+    inp.oninput = function () { e.name = inp.value; };
+    d.appendChild(inp);
+    var rm = document.createElement("button");
+    rm.textContent = "remove"; rm.style.cssText = "color:#c00;background:none;border:none;cursor:pointer;font-size:11px;margin-top:4px;";
+    rm.onclick = function () { removeFromPlan(id); };
+    d.appendChild(rm);
+    box2.appendChild(d);
+  });
+  document.getElementById("pm-save").disabled = plan.size === 0;
 }
 
-document.getElementById("search").oninput = (e) => render(e.target.value);
-document.getElementById("save").onclick = async () => {
-  const events = [...plan.entries()].map(([id, e]) => ({
-    name: e.name, properties: [...e.properties], anchors: [{ id, fingerprint: e.fingerprint }],
-  }));
-  await fetch("/plan", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ events }) });
-  document.body.innerHTML = "<div style='padding:40px;font-size:18px'>Saved — back to the terminal.</div>";
-};
-render("");
-</script>
-</body></html>`;
+document.addEventListener("click", function (e) {
+  if (!active || panel.contains(e.target)) return;
+  e.preventDefault(); e.stopPropagation();
+  (async function () {
+    if (!catalog) catalog = await fetch(WIZARD + "/catalog.pcs").then(function (r) { return r.json(); });
+    var src = fiberSource(e.target);
+    var body = document.getElementById("pm-body");
+    if (!src) {
+      body.innerHTML = "<b>Can't resolve this element.</b><br>No React dev source info on this build (likely SWC/Next.js or React 19). This mode needs the classic Babel dev transform, or the stamp loader wired into your bundler config — see @precedence/cli's README.";
+      return;
+    }
+    var el = findElement(catalog, src.fileName, src.lineNumber);
+    if (!el) {
+      body.innerHTML = "<b>No catalog entry at</b> " + src.fileName + ":" + src.lineNumber + "<br>(not a tracked handler, or outside the scanned dirs)";
+      return;
+    }
+    renderBody(el);
+  })();
+}, true);
+
+document.getElementById("pm-save").addEventListener("click", function () {
+  var events = [];
+  plan.forEach(function (e, id) {
+    events.push({ name: e.name, properties: Array.from(e.properties), anchors: [{ id: id, fingerprint: e.fingerprint }] });
+  });
+  fetch(WIZARD + "/plan", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ events: events }) })
+    .then(function () { panel.innerHTML = "<div style='padding:20px'>Saved — back to the terminal.</div>"; });
+});
+
+toggle();
+})();`;
+
+function bookmarklet(origin: string): string {
+  const src = `${origin}/overlay.js`;
+  const loader = `(function(){var s=document.createElement("script");s.src=${JSON.stringify(src)};document.body.appendChild(s);})()`;
+  return `javascript:${encodeURIComponent(loader)}`;
+}
 
 export interface PickServer {
   url: string;
-  /** resolves with the plan once the page POSTs it; the server closes itself first */
+  bookmarklet: string;
+  /** resolves with the plan once the overlay POSTs it; the server closes itself first */
   plan: Promise<{ events: unknown[] }>;
   close: () => void;
 }
 
-/** The server on its own — no browser, no console output — so it's directly testable.
+/** The server on its own — no console output — so it's directly testable.
  *  Resolves once the socket is actually listening, so `url` is real, not guessed. */
 export function startPickServer(catalog: Catalog): Promise<PickServer> {
   return new Promise((resolveServer) => {
     let server!: http.Server;
     const plan = new Promise<{ events: unknown[] }>((resolvePlan) => {
       server = http.createServer((req, res) => {
-        if (req.method === "GET" && req.url === "/") {
-          res.writeHead(200, { "content-type": "text/html" });
-          res.end(PAGE(JSON.stringify(catalog)));
+        cors(res);
+        if (req.method === "OPTIONS") {
+          res.writeHead(204);
+          res.end();
+        } else if (req.method === "GET" && req.url === "/overlay.js") {
+          res.writeHead(200, { "content-type": "application/javascript" });
+          res.end(OVERLAY(`http://127.0.0.1:${(server.address() as AddressInfo).port}`));
+        } else if (req.method === "GET" && req.url === "/catalog.pcs") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify(catalog));
         } else if (req.method === "POST" && req.url === "/plan") {
           let body = "";
           req.on("data", (c) => (body += c));
@@ -189,16 +228,17 @@ export function startPickServer(catalog: Catalog): Promise<PickServer> {
       });
       server.listen(0, "127.0.0.1", () => {
         const { port } = server.address() as AddressInfo;
-        resolveServer({ url: `http://127.0.0.1:${port}/`, plan, close: () => server.close() });
+        const url = `http://127.0.0.1:${port}`;
+        resolveServer({ url, bookmarklet: bookmarklet(url), plan, close: () => server.close() });
       });
     });
   });
 }
 
 export async function runPicker(catalog: Catalog): Promise<{ events: unknown[] }> {
-  const { url, plan } = await startPickServer(catalog);
-  console.log(`\n  picker: ${url}`);
-  console.log(`  (opening your browser — pick outcomes, name them, "Save & continue")`);
-  openBrowser(url);
-  return plan;
+  const server = await startPickServer(catalog);
+  console.log(`\n  picker ready — drag this to your bookmarks bar (or paste into the address bar while on your running app):\n`);
+  console.log(`    ${server.bookmarklet}\n`);
+  console.log(`  Then: open your dev server in the browser, click the bookmarklet, Alt+Shift+P, click an element.`);
+  return server.plan;
 }

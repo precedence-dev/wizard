@@ -18,7 +18,7 @@ const { detectProject, collectFiles } = await import(dist("detect.js"));
 const { scan, writeCatalog } = await import(dist("scan.js"));
 const { scaffoldPlan, writeDraftPlan, readPlan } = await import(dist("plan.js"));
 const { apply } = await import(dist("apply.js"));
-const { startPickServer } = await import(dist("pick.js"));
+const { startPickServer, fiberSource, findElement } = await import(dist("pick.js"));
 
 let fails = 0;
 const check = (name, ok, detail) => {
@@ -77,24 +77,58 @@ check("scan: found the guard branch (!user) and the result.ok outcome",
 const catalogFile = writeCatalog(tmp, catalog);
 check("scan: writes .precedence/catalog.pcs, valid JSON", JSON.parse(fs.readFileSync(catalogFile, "utf8")).tool === "precedence");
 
-/* ---- picker server: the real "file-scoped pick one" fallback, over HTTP ---- */
+/* ---- resolution algorithm: the exact functions shipped into the browser overlay ---- */
+{
+  // a fake DOM node with a React-style fiber tag, several hops up from where _debugSource lives
+  const leafFiber = { return: { return: { _debugSource: { fileName: "src/Checkout.tsx", lineNumber: 42 }, return: null } } };
+  const domNode = { __reactFiber$abc123: leafFiber, parentElement: null };
+  check("fiberSource: walks up the fiber's `return` chain to find _debugSource",
+    JSON.stringify(fiberSource(domNode)) === JSON.stringify({ fileName: "src/Checkout.tsx", lineNumber: 42 }));
+
+  const plainDiv = { parentElement: domNode }; // no fiber tag on this node itself, but its DOM parent has one
+  check("fiberSource: climbs parentElement when the clicked node itself has no fiber tag",
+    fiberSource(plainDiv)?.lineNumber === 42);
+
+  check("fiberSource: a node with no fiber anywhere in its ancestry resolves to null (the SWC/React 19 case)",
+    fiberSource({ parentElement: { parentElement: null } }) === null);
+
+  const el = catalog.elements[0];
+  check("findElement: resolves an absolute-looking path by file suffix + a small line tolerance",
+    findElement(catalog, "C:\\\\repo\\\\" + el.file, el.line + 1)?.ref === el.ref);
+  check("findElement: a real file but a line far from any element resolves to null, not a wrong guess",
+    findElement(catalog, el.file, el.line + 500) === null);
+  check("findElement: a file not in the catalog resolves to null",
+    findElement(catalog, "src/NotScanned.tsx", 1) === null);
+}
+
+/* ---- picker server: real click-on-the-DOM picking, via an injected overlay ---- */
 {
   const picker = await startPickServer(catalog);
-  check("picker: serves a real listening URL", /^http:\/\/127\.0\.0\.1:\d+\/$/.test(picker.url));
+  check("picker: serves a real listening URL", /^http:\/\/127\.0\.0\.1:\d+$/.test(picker.url));
+  check("picker: the bookmarklet is a javascript: URI pointing at this server",
+    picker.bookmarklet.startsWith("javascript:") && decodeURIComponent(picker.bookmarklet).includes(picker.url + "/overlay.js"));
 
-  const page = await (await fetch(picker.url)).text();
-  const realBranchId = catalog.elements.flatMap((e) => e.actions).flatMap((a) => a.branches).find((b) => /ok/.test(b.conditionKey)).id;
-  check("picker: the served page embeds the real catalog, including a real anchor id",
-    page.includes(realBranchId) && page.includes("Save &amp; continue"));
+  const overlayRes = await fetch(picker.url + "/overlay.js");
+  const overlayJs = await overlayRes.text();
+  check("overlay.js: served with a JS content-type", (overlayRes.headers.get("content-type") || "").includes("javascript"));
+  check("overlay.js: syntactically valid (parses as a function body)",
+    (() => { try { new Function(overlayJs); return true; } catch { return false; } })());
+  check("overlay.js: does real fiber-based resolution (_debugSource), no catalog text baked in — fetched at click time",
+    overlayJs.includes("_debugSource") && overlayJs.includes("/catalog.pcs") && !overlayJs.includes(catalog.elements[0].file));
 
-  const chosen = { events: [{ name: "checkout_ok", properties: ["result"], anchors: [{ id: realBranchId, fingerprint: { handler: "onSubmit", conditionKey: "_.ok" } }] }] };
-  const postRes = await fetch(picker.url + "plan", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(chosen) });
-  check("picker: POST /plan is accepted", postRes.ok);
+  const catalogRes = await fetch(picker.url + "/catalog.pcs");
+  check("picker: /catalog.pcs serves the real catalog, CORS-enabled for the target app's origin",
+    (await catalogRes.json()).tool === "precedence" && catalogRes.headers.get("access-control-allow-origin") === "*");
+
+  const okBranch = catalog.elements.flatMap((e) => e.actions).flatMap((a) => a.branches).find((b) => /ok/.test(b.conditionKey));
+  const chosen = { events: [{ name: "checkout_ok", properties: ["result"], anchors: [{ id: okBranch.id, fingerprint: okBranch.fingerprint }] }] };
+  const postRes = await fetch(picker.url + "/plan", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(chosen) });
+  check("picker: POST /plan (what the overlay's Save button sends) is accepted", postRes.ok);
   const resolved = await picker.plan;
   check("picker: the server's `plan` promise resolves with exactly what was POSTed",
     JSON.stringify(resolved) === JSON.stringify(chosen));
 
-  const afterClose = await fetch(picker.url).catch(() => null);
+  const afterClose = await fetch(picker.url + "/catalog.pcs").catch(() => null);
   check("picker: the server closes itself once a plan is saved", afterClose === null);
 }
 

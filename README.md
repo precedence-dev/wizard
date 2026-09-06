@@ -27,20 +27,31 @@ reads your source into an LLM — the analysis (`@precedence/cli`) and the edits
 
 ## The picker
 
-Real, but it's the **"file-scoped pick one"** fallback `@precedence/cli`'s own
-README already documents as one of the picker's three resolution modes — not
-click-on-the-page DOM picking. That mode needs either the stamp loader wired
-into your bundler config or React's dev-mode fiber, and this wizard doesn't
-touch either yet, so this is a searchable tree over the real catalog instead:
-every file, component, action and branch, real anchor ids and candidate
-properties, name what you want and hit "Save & continue". See `src/pick.ts` —
-a tiny local HTTP server (no framework, no external requests, nothing served
-but this one page) that the CLI awaits before continuing to instrument.
+Real click-on-the-page DOM picking, against your actual running app — not a
+page rendered for you. A bookmarklet the CLI prints injects an overlay into
+whatever page you're on: hover highlights elements, click resolves the DOM
+node to a catalog entry via React's dev-mode fiber (`_debugSource` — file +
+line, set by the classic Babel/React dev transform), and shows that element's
+actions and branches to pick from. This is the **fiber** rung of the same
+resolution order `@precedence/cli`'s own README documents (stamp loader ->
+fiber -> a file-scoped fallback) — no bundler config edited, no stamp loader
+required.
 
-`--ci` (no browser to run a picker in) scaffolds the same kind of draft a
-human would produce by hand instead — every anchor in it is real, copied off
-actual outcome branches — and asks you to hand-edit it before running again.
-See `src/plan.ts`.
+The honest limit: `_debugSource` isn't present on every build — notably not
+Next.js's default SWC compiler or React 19. The overlay says so plainly on a
+failed resolution rather than guessing, and points at the stamp loader (wired
+into your bundler config) as the fix, which this wizard doesn't automate yet.
+
+`--ci` (no browser to run a picker in) scaffolds a draft `plan.json` instead —
+every anchor in it real, copied off actual outcome branches — for hand-editing
+before running again. See `src/plan.ts`.
+
+Mechanically: `src/pick.ts` starts a tiny local, CORS-enabled HTTP server (no
+framework) that serves the overlay script and the catalog, and the CLI awaits
+its `POST /plan` before continuing to instrument. The resolution algorithm
+itself (`fiberSource`, `findElement`) is real, typed, unit-tested TypeScript —
+embedded into the browser script via `.toString()`, so the tested code and the
+shipped code are provably the same text, not a hand-kept-in-sync copy.
 
 ## One honest gap, not hidden
 
@@ -60,7 +71,7 @@ src/
 ├── git.ts       clean-tree / branch checks
 ├── detect.ts    framework + source-dir detection, file collection
 ├── scan.ts      wraps @precedence/cli's buildCatalog
-├── pick.ts       the picker: a local HTTP server + a searchable-tree page
+├── pick.ts       the picker: bookmarklet, overlay, fiber-based resolution, local server
 ├── plan.ts      reads plan.json, or scaffolds a draft (--ci) from the catalog
 └── apply.ts     wraps @precedence/instrument's instrument()
 ```
