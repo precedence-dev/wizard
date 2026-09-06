@@ -1,8 +1,8 @@
 /**
- * @precedence/wizard invariants: exercises the real, working pieces
- * (git preconditions, detection, scan, plan scaffold, apply) end to end
- * against a throwaway git repo. Skips the two stand-in steps (auth, picker)
- * since there's nothing real to test yet — see README.
+ * @precedence/wizard invariants: exercises the real, working pieces (git
+ * preconditions, detection, scan, the picker server, plan scaffold, apply)
+ * end to end against a throwaway git repo. The only stub is auth — see
+ * README — there's nothing real to test there yet.
  */
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -18,6 +18,7 @@ const { detectProject, collectFiles } = await import(dist("detect.js"));
 const { scan, writeCatalog } = await import(dist("scan.js"));
 const { scaffoldPlan, writeDraftPlan, readPlan } = await import(dist("plan.js"));
 const { apply } = await import(dist("apply.js"));
+const { startPickServer } = await import(dist("pick.js"));
 
 let fails = 0;
 const check = (name, ok, detail) => {
@@ -76,7 +77,28 @@ check("scan: found the guard branch (!user) and the result.ok outcome",
 const catalogFile = writeCatalog(tmp, catalog);
 check("scan: writes .precedence/catalog.pcs, valid JSON", JSON.parse(fs.readFileSync(catalogFile, "utf8")).tool === "precedence");
 
-/* ---- plan: scaffold from the real catalog, since the picker doesn't exist yet ---- */
+/* ---- picker server: the real "file-scoped pick one" fallback, over HTTP ---- */
+{
+  const picker = await startPickServer(catalog);
+  check("picker: serves a real listening URL", /^http:\/\/127\.0\.0\.1:\d+\/$/.test(picker.url));
+
+  const page = await (await fetch(picker.url)).text();
+  const realBranchId = catalog.elements.flatMap((e) => e.actions).flatMap((a) => a.branches).find((b) => /ok/.test(b.conditionKey)).id;
+  check("picker: the served page embeds the real catalog, including a real anchor id",
+    page.includes(realBranchId) && page.includes("Save &amp; continue"));
+
+  const chosen = { events: [{ name: "checkout_ok", properties: ["result"], anchors: [{ id: realBranchId, fingerprint: { handler: "onSubmit", conditionKey: "_.ok" } }] }] };
+  const postRes = await fetch(picker.url + "plan", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(chosen) });
+  check("picker: POST /plan is accepted", postRes.ok);
+  const resolved = await picker.plan;
+  check("picker: the server's `plan` promise resolves with exactly what was POSTed",
+    JSON.stringify(resolved) === JSON.stringify(chosen));
+
+  const afterClose = await fetch(picker.url).catch(() => null);
+  check("picker: the server closes itself once a plan is saved", afterClose === null);
+}
+
+/* ---- plan: scaffold from the real catalog, for --ci (no browser to run the picker in) ---- */
 check("plan: no plan.json yet -> readPlan returns null", readPlan(tmp) === null);
 const draft = scaffoldPlan(catalog);
 check("plan: scaffold produces at least one real anchor id from the catalog",

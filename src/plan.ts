@@ -1,10 +1,9 @@
 /**
- * The picker doesn't exist yet (see this repo's README). Until it does, this
- * is the fallback: turn the real catalog into a starter plan.json a developer
- * can hand-edit, instead of asking them to author the anchor-id scheme from
- * scratch. Every anchor here is real — copied off actual OutcomeBranch/Action
- * records in the catalog — so the only editing needed is naming events and
- * trimming/choosing which ones to keep.
+ * plan.json: read it, write it, or (for --ci, where there's no browser to
+ * run the picker in) scaffold a draft from the real catalog instead — every
+ * anchor in the draft is real, copied off actual OutcomeBranch/Action
+ * records, so the only editing needed is naming events and trimming which
+ * ones to keep.
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -67,8 +66,12 @@ export function readPlan(cwd: string): unknown | null {
 }
 
 export function writeDraftPlan(cwd: string, catalog: Catalog): string {
+  return writePlan(cwd, scaffoldPlan(catalog));
+}
+
+export function writePlan(cwd: string, plan: unknown): string {
   const out = planPath(cwd);
   fs.mkdirSync(path.dirname(out), { recursive: true });
-  fs.writeFileSync(out, JSON.stringify(scaffoldPlan(catalog), null, 2) + "\n");
+  fs.writeFileSync(out, JSON.stringify(plan, null, 2) + "\n");
   return out;
 }

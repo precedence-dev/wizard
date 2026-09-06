@@ -20,36 +20,47 @@ reads your source into an LLM — the analysis (`@precedence/cli`) and the edits
    run always lands in its own reviewable commit), detects the framework.
 2. **Scan** — runs the real analyzer against your detected source dirs,
    writes `.precedence/catalog.pcs`.
-3. **Pick outcomes** — see below, this step is a stand-in today.
+3. **Pick outcomes** — opens a local picker in your browser (see below);
+   `--ci` skips the browser and scaffolds a draft `plan.json` instead.
 4. **Instrument** — applies `.precedence/plan.json` via `@precedence/instrument`,
    prints exactly which files changed.
 
-## Two honest gaps, not hidden
+## The picker
 
-- **No picker yet.** The picker UI (click an element, see its branch tree,
-  choose what to track) doesn't exist as real code in any repo yet. Instead
-  of faking that, this wizard scaffolds a draft `plan.json` from the real
-  catalog — every anchor id and fingerprint in it is real, copied off actual
-  outcome branches — and asks you to hand-edit it (rename events, trim the
-  ones you don't want) before running again. See `src/plan.ts`.
-- **No account/registry backend yet.** The real flow is meant to be:
-  authenticate, then fetch `@precedence/cli` from a gated registry so the
-  scan still runs entirely on your machine. That backend doesn't exist yet,
-  so this repo depends on `@precedence/cli` as a local `file:` sibling
-  instead (same temporary stand-in `@precedence/instrument` uses for the
-  same reason — see that package's README).
+Real, but it's the **"file-scoped pick one"** fallback `@precedence/cli`'s own
+README already documents as one of the picker's three resolution modes — not
+click-on-the-page DOM picking. That mode needs either the stamp loader wired
+into your bundler config or React's dev-mode fiber, and this wizard doesn't
+touch either yet, so this is a searchable tree over the real catalog instead:
+every file, component, action and branch, real anchor ids and candidate
+properties, name what you want and hit "Save & continue". See `src/pick.ts` —
+a tiny local HTTP server (no framework, no external requests, nothing served
+but this one page) that the CLI awaits before continuing to instrument.
 
-Both stand-ins are marked in `src/cli.ts` at the point they'll be replaced;
-neither changes the shape of the commands around them.
+`--ci` (no browser to run a picker in) scaffolds the same kind of draft a
+human would produce by hand instead — every anchor in it is real, copied off
+actual outcome branches — and asks you to hand-edit it before running again.
+See `src/plan.ts`.
+
+## One honest gap, not hidden
+
+**No account/registry backend yet.** The real flow is meant to be:
+authenticate, then fetch `@precedence/cli` from a gated registry so the scan
+still runs entirely on your machine. That backend doesn't exist yet, so this
+repo depends on `@precedence/cli` as a local `file:` sibling instead (same
+temporary stand-in `@precedence/instrument` uses for the same reason — see
+that package's README). Marked in `src/cli.ts` at the point it'll be
+replaced; it doesn't change the shape of the commands around it.
 
 ## Structure
 
 ```
 src/
-├── cli.ts      orchestration: preconditions -> scan -> plan -> instrument
+├── cli.ts      orchestration: preconditions -> scan -> pick -> instrument
 ├── git.ts       clean-tree / branch checks
 ├── detect.ts    framework + source-dir detection, file collection
 ├── scan.ts      wraps @precedence/cli's buildCatalog
-├── plan.ts      reads plan.json, or scaffolds a draft from the catalog
+├── pick.ts       the picker: a local HTTP server + a searchable-tree page
+├── plan.ts      reads plan.json, or scaffolds a draft (--ci) from the catalog
 └── apply.ts     wraps @precedence/instrument's instrument()
 ```

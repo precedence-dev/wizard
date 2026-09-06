@@ -5,19 +5,23 @@
  * authenticate, do the work, show exactly what changed, leave a manual
  * fallback wherever automation can't run yet.
  *
- * Two steps here are honest stand-ins, not finished:
+ * One step here is a genuine stand-in, not finished:
  *   - auth: there's no registry/account backend yet. `core` is depended on
  *     as a local `file:` sibling for now (see README) instead of fetched
  *     post-login.
- *   - pick outcomes: the picker UI doesn't exist as real code yet. This
- *     scaffolds a draft plan.json from the real catalog instead of opening
- *     a browser picker, and asks the developer to edit it by hand.
+ * The picker (src/pick.ts) is real, but it's the "file-scoped pick one"
+ * fallback @precedence/cli's README already documents, not click-on-the-page
+ * DOM picking — that needs either the stamp loader wired into the target's
+ * bundler config or React's dev-mode fiber, and this wizard doesn't touch
+ * either yet. --ci skips the browser entirely and writes the same kind of
+ * draft plan.json a human would produce by hand, for scripted/CI runs.
  * Everything else (git preconditions, the scan, applying a plan) is real.
  */
 import { isGitRepo, isClean, currentBranch } from "./git";
 import { detectProject } from "./detect";
 import { scan, writeCatalog } from "./scan";
-import { readPlan, writeDraftPlan, planPath } from "./plan";
+import { readPlan, writeDraftPlan, writePlan, planPath } from "./plan";
+import { runPicker } from "./pick";
 import { apply } from "./apply";
 import type { Plan } from "@precedence/instrument";
 
@@ -26,14 +30,15 @@ const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const bold = (s: string) => `\x1b[1m${s}\x1b[0m`;
 const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
 
-interface Opts { allowDirty: boolean; track?: string; types: boolean; help: boolean; }
+interface Opts { allowDirty: boolean; track?: string; types: boolean; ci: boolean; help: boolean; }
 
 function parseArgs(argv: string[]): Opts {
-  const o: Opts = { allowDirty: false, types: false, help: false };
+  const o: Opts = { allowDirty: false, types: false, ci: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--allow-dirty") o.allowDirty = true;
     else if (a === "--types") o.types = true;
+    else if (a === "--ci") o.ci = true;
     else if (a === "--track") o.track = argv[++i];
     else if (a === "-h" || a === "--help") o.help = true;
   }
@@ -49,10 +54,11 @@ OPTIONS
   --allow-dirty     proceed with uncommitted changes present
   --types           resolve declared types (slower, enables interprocedural outcomes)
   --track <spec>    "track from @/lib/analytics" adds the import; default console.log
+  --ci              non-interactive: write a draft plan.json instead of opening the picker
   -h, --help
 `;
 
-function main(): void {
+async function main(): Promise<void> {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.help) { process.stdout.write(HELP); return; }
   const cwd = process.cwd();
@@ -87,14 +93,24 @@ function main(): void {
   console.log(`  ${cyan(catalogFile)}`);
   console.log(`  ${fileCount} file(s), ${catalog.elements.length} element(s), ${catalog.attachPoints} attach point(s)`);
 
-  // 5. pick outcomes (stub — picker doesn't exist yet; scaffold a draft instead)
+  if (catalog.attachPoints === 0) {
+    console.log(yellow("\n  nothing trackable found — nothing to pick, stopping here."));
+    return;
+  }
+
+  // 5. pick outcomes
   let plan = readPlan(cwd) as Plan | null;
   if (!plan) {
-    const draft = writeDraftPlan(cwd, catalog);
-    console.log(yellow(`\n  no plan.json yet — the picker isn't built yet, so wrote a starter draft instead:`));
-    console.log(`  ${cyan(draft)}`);
-    console.log(`  Edit it — rename events, trim the ones you don't want — then run this again.`);
-    return;
+    if (opts.ci) {
+      const draft = writeDraftPlan(cwd, catalog);
+      console.log(yellow(`\n  --ci: wrote a draft plan instead of opening the picker:`));
+      console.log(`  ${cyan(draft)}`);
+      console.log(`  Edit it, then run again (without --ci to apply, or with --ci once it's ready).`);
+      return;
+    }
+    plan = (await runPicker(catalog)) as Plan;
+    writePlan(cwd, plan);
+    console.log(`  saved ${cyan(planPath(cwd))}`);
   }
 
   // 6. instrument
