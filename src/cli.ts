@@ -18,7 +18,7 @@
 import { isGitRepo, isClean, currentBranch } from "./git";
 import { detectProject } from "./detect";
 import { scan, writeCatalog, publishCatalogForDevtools } from "./scan";
-import { readPlan, writeDraftPlan, writePlan, planPath } from "./plan";
+import { readPlan, writeDraftPlan, planPath } from "./plan";
 import { runPicker } from "./pick";
 import { wireDevtools, addDevtoolsDependency, SNIPPET, wireStampLoader, STAMP_SNIPPET } from "./wire";
 import { apply } from "./apply";
@@ -151,9 +151,13 @@ async function main(): Promise<void> {
     }
     console.log(`  published ${cyan(catalogPath)}`);
 
-    plan = (await runPicker(opts.devUrl)) as Plan;
-    writePlan(cwd, plan);
-    console.log(`  saved ${cyan(planPath(cwd))}`);
+    await runPicker(cwd, opts.devUrl);
+    plan = readPlan(cwd) as Plan | null;
+    if (!plan) {
+      console.log(yellow(`\n  no outcomes picked — nothing was ever saved to ${planPath(cwd)}. Run again when you're ready.`));
+      return;
+    }
+    console.log(`  read ${cyan(planPath(cwd))}`);
   }
 
   // 6. instrument

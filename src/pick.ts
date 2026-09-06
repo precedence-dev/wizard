@@ -7,12 +7,20 @@
  * CLI (not a hosted dashboard needing to reach a separate tab), a query
  * param the component checks for itself is enough.
  *
- * This server's only job now is to receive the finished plan — the catalog
- * fetch and the picking UI both live in the target app itself.
+ * Every pick/rename/remove POSTs the current full plan immediately — this
+ * server overwrites `.precedence/plan.json` on disk on every one of those,
+ * not just once at the end. That's the actual persistence layer (a browser
+ * reload, tab close, or crash mid-picking loses nothing, since the file was
+ * already current); a GET rehydrates the panel with whatever's already
+ * picked, so navigating around the app to find more elements doesn't reset
+ * it either. There's no "Save & continue" click to wait on: the terminal
+ * (Enter) is the "I'm done" signal, since the file is always already
+ * correct by the time you press it.
  */
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 import { execFile } from "node:child_process";
+import { readPlan, writePlan } from "./plan";
 
 /** Fixed so `<PrecedenceDevtools />`'s default planEndpoint always finds it. */
 const DEFAULT_PORT = 51820;
@@ -28,64 +36,78 @@ function openBrowser(url: string): void {
 
 const cors = (res: http.ServerResponse) => {
   res.setHeader("access-control-allow-origin", "*");
-  res.setHeader("access-control-allow-methods", "POST, OPTIONS");
+  res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
   res.setHeader("access-control-allow-headers", "content-type");
 };
 
 export interface PickServer {
   url: string;
-  /** resolves with the plan once the panel POSTs it; the server closes itself first */
-  plan: Promise<{ events: unknown[] }>;
   close: () => void;
 }
 
-/** The server on its own — no console output — so it's directly testable.
- *  Resolves once the socket is actually listening. */
-export function startPickServer(port = DEFAULT_PORT): Promise<PickServer> {
+/** The server on its own — no console output, no stdin wait — so it's directly
+ *  testable. Resolves once the socket is actually listening. Every POST /plan
+ *  overwrites cwd's .precedence/plan.json immediately; GET /plan reads it back
+ *  (or {events:[]} if nothing's been picked yet). */
+export function startPickServer(cwd: string, port = DEFAULT_PORT): Promise<PickServer> {
   return new Promise((resolveServer) => {
-    let server!: http.Server;
-    const plan = new Promise<{ events: unknown[] }>((resolvePlan) => {
-      server = http.createServer((req, res) => {
-        cors(res);
-        if (req.method === "OPTIONS") {
-          res.writeHead(204);
-          res.end();
-        } else if (req.method === "POST" && req.url === "/plan") {
-          let body = "";
-          req.on("data", (c) => (body += c));
-          req.on("end", () => {
+    const server = http.createServer((req, res) => {
+      cors(res);
+      if (req.method === "OPTIONS") {
+        res.writeHead(204);
+        res.end();
+      } else if (req.method === "GET" && req.url === "/plan") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(readPlan(cwd) || { events: [] }));
+      } else if (req.method === "POST" && req.url === "/plan") {
+        let body = "";
+        req.on("data", (c) => (body += c));
+        req.on("end", () => {
+          try {
+            writePlan(cwd, JSON.parse(body));
             res.writeHead(200, { "content-type": "application/json" });
             res.end("{}");
-            const parsed = JSON.parse(body);
-            server.close();
-            resolvePlan(parsed);
-          });
-        } else {
-          res.writeHead(404);
-          res.end();
-        }
-      });
-      // A fixed default port means <PrecedenceDevtools />'s default
-      // planEndpoint always finds it with no configuration on either side.
-      // Falls back to a random free port if something else is using it.
-      server.once("error", () => server.listen(0, "127.0.0.1"));
-      server.listen(port, "127.0.0.1");
-      server.once("listening", () => {
-        const { port: p } = server.address() as AddressInfo;
-        resolveServer({ url: `http://127.0.0.1:${p}`, plan, close: () => server.close() });
-      });
+          } catch {
+            res.writeHead(400);
+            res.end();
+          }
+        });
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    // A fixed default port means <PrecedenceDevtools />'s default planEndpoint
+    // always finds it with no configuration on either side. Falls back to a
+    // random free port if something else is using it.
+    server.once("error", () => server.listen(0, "127.0.0.1"));
+    server.listen(port, "127.0.0.1");
+    server.once("listening", () => {
+      const { port: p } = server.address() as AddressInfo;
+      resolveServer({ url: `http://127.0.0.1:${p}`, close: () => server.close() });
     });
   });
 }
 
-export async function runPicker(devUrl: string): Promise<{ events: unknown[] }> {
-  const server = await startPickServer();
+function waitForEnter(): Promise<void> {
+  return new Promise((resolve) => {
+    process.stdin.setEncoding("utf8");
+    process.stdin.once("data", () => resolve());
+    process.stdin.resume();
+  });
+}
+
+export async function runPicker(cwd: string, devUrl: string): Promise<void> {
+  const server = await startPickServer(cwd);
   const target = `${devUrl}${devUrl.includes("?") ? "&" : "?"}precedence=pick`;
   console.log(`\n  opening ${target}`);
-  console.log(`  (click an element, choose outcomes, "Save & continue" — Alt+Shift+P if it doesn't open automatically)`);
+  console.log(`  click an element, choose outcomes — every pick saves immediately to .precedence/plan.json`);
+  console.log(`  (Alt+Shift+P if it doesn't open automatically)`);
   if (server.url !== `http://127.0.0.1:${DEFAULT_PORT}`) {
     console.log(`  note: port ${DEFAULT_PORT} was busy, using ${server.url} instead — pass planEndpoint="${server.url}/plan" to <PrecedenceDevtools /> for this run`);
   }
   openBrowser(target);
-  return server.plan;
+  console.log(`\n  press Enter here when you're done picking...`);
+  await waitForEnter();
+  server.close();
 }

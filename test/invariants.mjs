@@ -224,24 +224,40 @@ export default nextConfig;
   fs.rmSync(existingTurbopack, { recursive: true, force: true });
 }
 
-/* ---- picker server: receives the finished plan, nothing else ---- */
+/* ---- picker server: every POST overwrites .precedence/plan.json immediately,
+   GET reads it back — this IS the persistence layer now, not localStorage ---- */
 {
-  const picker = await startPickServer(0); // :0 = any free port, never touch the real default port during tests
+  const pickTmp = fs.mkdtempSync(path.join(os.tmpdir(), "pm-pick-"));
+  const picker = await startPickServer(pickTmp, 0); // :0 = any free port, never touch the real default port during tests
   check("picker: serves a real listening URL", /^http:\/\/127\.0\.0\.1:\d+$/.test(picker.url));
 
   const preflight = await fetch(picker.url + "/plan", { method: "OPTIONS" });
   check("picker: answers the CORS preflight for the cross-origin POST from the target app", preflight.status === 204);
 
+  const empty = await (await fetch(picker.url + "/plan")).json();
+  check("picker: GET /plan before anything's picked -> {events:[]}, not a 404/throw", JSON.stringify(empty) === JSON.stringify({ events: [] }));
+
   const okBranch = catalog.elements.flatMap((e) => e.actions).flatMap((a) => a.branches).find((b) => /ok/.test(b.conditionKey));
   const chosen = { events: [{ name: "checkout_ok", properties: ["result"], anchors: [{ id: okBranch.id, fingerprint: okBranch.fingerprint }] }] };
   const postRes = await fetch(picker.url + "/plan", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(chosen) });
-  check("picker: POST /plan (what <PrecedenceDevtools />'s Save button sends) is accepted", postRes.ok);
-  const resolved = await picker.plan;
-  check("picker: the server's `plan` promise resolves with exactly what was POSTed",
-    JSON.stringify(resolved) === JSON.stringify(chosen));
+  check("picker: POST /plan (what <PrecedenceDevtools /> sends on every pick) is accepted", postRes.ok);
+  check("picker: the POST immediately overwrote .precedence/plan.json on disk — not buffered for a later 'save' step",
+    JSON.stringify(JSON.parse(fs.readFileSync(path.join(pickTmp, ".precedence", "plan.json"), "utf8"))) === JSON.stringify(chosen));
 
+  const afterPost = await (await fetch(picker.url + "/plan")).json();
+  check("picker: GET /plan after a POST reads back exactly what was saved — this is how the panel rehydrates on reload",
+    JSON.stringify(afterPost) === JSON.stringify(chosen));
+
+  // a second, smaller pick overwrites — the file always reflects the CURRENT full state, not an append log
+  const revised = { events: [{ name: "checkout_ok_renamed", properties: [], anchors: [{ id: okBranch.id, fingerprint: okBranch.fingerprint }] }] };
+  await fetch(picker.url + "/plan", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(revised) });
+  check("picker: a later POST replaces the file's contents, doesn't merge/append",
+    JSON.parse(fs.readFileSync(path.join(pickTmp, ".precedence", "plan.json"), "utf8")).events[0].name === "checkout_ok_renamed");
+
+  picker.close();
   const afterClose = await fetch(picker.url + "/plan", { method: "OPTIONS" }).catch(() => null);
-  check("picker: the server closes itself once a plan is saved", afterClose === null);
+  check("picker: close() actually stops the server", afterClose === null);
+  fs.rmSync(pickTmp, { recursive: true, force: true });
 }
 
 /* ---- picker server: falls back to a free port when its default is already taken ---- */
@@ -249,11 +265,13 @@ export default nextConfig;
   const net = await import("node:net");
   const blocker = net.createServer();
   await new Promise((r) => blocker.listen(51820, "127.0.0.1", r));
-  const picker = await startPickServer(); // no explicit port -> the real default, which is occupied
+  const pickTmp2 = fs.mkdtempSync(path.join(os.tmpdir(), "pm-pick2-"));
+  const picker = await startPickServer(pickTmp2); // no explicit port -> the real default, which is occupied
   check("picker: falls back to a free port instead of failing when the default port is busy",
     !picker.url.endsWith(":51820") && /^http:\/\/127\.0\.0\.1:\d+$/.test(picker.url));
   picker.close();
   await new Promise((r) => blocker.close(r));
+  fs.rmSync(pickTmp2, { recursive: true, force: true });
 }
 
 /* ---- plan: scaffold from the real catalog, for --ci (no browser to run the picker in) ---- */
