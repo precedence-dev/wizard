@@ -12,14 +12,15 @@
  *     this adds to your package.json is real but `npm install` won't
  *     resolve it until it is.
  * Everything else — git preconditions, the scan, wiring <PrecedenceDevtools />
- * into app/layout.tsx, launching the picker, applying a plan — is real.
+ * into app/layout.tsx, wiring the stamp loader into next.config, launching
+ * the picker, applying a plan — is real.
  */
 import { isGitRepo, isClean, currentBranch } from "./git";
 import { detectProject } from "./detect";
 import { scan, writeCatalog, publishCatalogForDevtools } from "./scan";
 import { readPlan, writeDraftPlan, writePlan, planPath } from "./plan";
 import { runPicker } from "./pick";
-import { wireDevtools, addDevtoolsDependency, SNIPPET } from "./wire";
+import { wireDevtools, addDevtoolsDependency, SNIPPET, wireStampLoader, STAMP_SNIPPET } from "./wire";
 import { apply } from "./apply";
 import type { Plan } from "@precedence/instrument";
 
@@ -107,23 +108,39 @@ async function main(): Promise<void> {
     return;
   }
 
-  // 5. wire <PrecedenceDevtools /> into the app + pick outcomes
+  // 5. wire <PrecedenceDevtools /> + the stamp loader into the app, then pick outcomes
   if (!plan) {
     const wire = wireDevtools(cwd);
-    const publishedFirstTime = wire.reason !== "already wired";
-
-    if (wire.applied && publishedFirstTime) {
-      addDevtoolsDependency(cwd);
-      console.log(`\n  wired ${cyan("<PrecedenceDevtools />")} into ${cyan(wire.file!)}`);
-      console.log(yellow(`  @precedence/sdk isn't published anywhere yet, so \`npm install\` won't resolve it until it is — see this repo's README.`));
-      console.log(`  Once it resolves: npm install, restart your dev server, then run this again to pick outcomes.`);
-      return;
-    }
     if (!wire.applied) {
       console.log(yellow(`\n  couldn't auto-wire the devtools panel (${wire.reason}).`));
       console.log(`  Add this once, by hand:\n`);
       for (const line of SNIPPET.split("\n")) console.log(`    ${line}`);
       console.log(`\n  Then run this again to pick outcomes.`);
+      return;
+    }
+    const wiredDevtoolsNow = wire.reason !== "already wired";
+    if (wiredDevtoolsNow) {
+      addDevtoolsDependency(cwd);
+      console.log(`\n  wired ${cyan("<PrecedenceDevtools />")} into ${cyan(wire.file!)}`);
+    }
+
+    const stamp = wireStampLoader(cwd);
+    if (!stamp.applied) {
+      console.log(yellow(`\n  couldn't auto-wire the stamp loader (${stamp.reason}).`));
+      console.log(`  It's optional — the picker still works via React's dev-mode fiber, except on Next.js's`);
+      console.log(`  default SWC compiler or React 19. Add this once, by hand, for those:\n`);
+      for (const line of STAMP_SNIPPET.split("\n")) console.log(`    ${line}`);
+    } else if (stamp.reason !== "already wired") {
+      console.log(`  wired the stamp loader into ${cyan(stamp.file!)}`);
+    }
+
+    if (wiredDevtoolsNow) {
+      console.log(yellow(`\n  @precedence/sdk isn't published anywhere yet, so \`npm install\` won't resolve it until it is — see this repo's README.`));
+      console.log(`  Once it resolves: npm install, restart your dev server, then run this again to pick outcomes.`);
+      return;
+    }
+    if (stamp.applied && stamp.reason !== "already wired") {
+      console.log(`\n  Restart your dev server (a build config changed), then run this again to pick outcomes.`);
       return;
     }
 

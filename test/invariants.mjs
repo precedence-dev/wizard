@@ -20,7 +20,8 @@ const { scan, writeCatalog, publishCatalogForDevtools } = await import(dist("sca
 const { scaffoldPlan, writeDraftPlan, readPlan } = await import(dist("plan.js"));
 const { apply } = await import(dist("apply.js"));
 const { startPickServer } = await import(dist("pick.js"));
-const { findLayoutFile, wireDevtools, addDevtoolsDependency, SNIPPET } = await import(dist("wire.js"));
+const { findLayoutFile, wireDevtools, addDevtoolsDependency, SNIPPET, findNextConfigFile, wireStampLoader } = await import(dist("wire.js"));
+const ts = (await import("typescript")).default;
 
 let fails = 0;
 const check = (name, ok, detail) => {
@@ -140,6 +141,87 @@ check("publishCatalogForDevtools: with public/ present, writes catalog.pcs there
   check("wire: no layout.tsx at all -> a clear reason, not an exception",
     wireDevtools(noLayoutProject).reason.includes("no app/layout.tsx found"));
   fs.rmSync(noLayoutProject, { recursive: true, force: true });
+}
+
+/* ---- wireStampLoader: real config edits, matching the exact shapes validated
+   against live Next.js apps (Turbopack rules object, and an existing webpack()
+   with a `return config;`) ---- */
+{
+  // no next.config at all
+  const noConfigProject = fs.mkdtempSync(path.join(os.tmpdir(), "pm-no-nextconfig-"));
+  check("wireStampLoader: no next.config.* -> a clear reason, not an exception",
+    wireStampLoader(noConfigProject).reason.includes("no next.config"));
+  fs.rmSync(noConfigProject, { recursive: true, force: true });
+
+  // greenfield: no turbopack, no webpack key -> insert the dev-gated turbopack.rules spread
+  const greenfield = fs.mkdtempSync(path.join(os.tmpdir(), "pm-greenfield-"));
+  const greenfieldConfig = `import path from "node:path";
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  images: { formats: ["image/avif"] },
+  compress: true,
+};
+
+export default nextConfig;
+`;
+  fs.writeFileSync(path.join(greenfield, "next.config.ts"), greenfieldConfig);
+  check("wireStampLoader: finds next.config.ts", findNextConfigFile(greenfield) === path.join(greenfield, "next.config.ts"));
+  const gfResult = wireStampLoader(greenfield);
+  check("wireStampLoader: applies a real turbopack.rules edit to a plain exported config object",
+    gfResult.applied === true, JSON.stringify(gfResult));
+  const gfAfter = fs.readFileSync(path.join(greenfield, "next.config.ts"), "utf8");
+  check("wireStampLoader: the edit is dev-gated, references the copied loader, leaves the rest of the config untouched",
+    gfAfter.includes('process.env.NODE_ENV === "development"') &&
+      gfAfter.includes("turbopack") && gfAfter.includes(".precedence/stamp-loader.cjs") &&
+      gfAfter.includes('images: { formats: ["image/avif"] }'));
+  check("wireStampLoader: the edited config is still syntactically valid TS",
+    ts.createSourceFile("next.config.ts", gfAfter, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX).parseDiagnostics.length === 0);
+  check("wireStampLoader: copies the real stamp-loader.js in, not a stub",
+    fs.readFileSync(path.join(greenfield, ".precedence", "stamp-loader.cjs"), "utf8").includes("data-pm-el"));
+  check("wireStampLoader: re-running is idempotent",
+    wireStampLoader(greenfield).reason === "already wired");
+  fs.rmSync(greenfield, { recursive: true, force: true });
+
+  // an existing webpack(config, { dev }) { ... return config; } — the riskier shape, matching a real working config
+  const webpackProject = fs.mkdtempSync(path.join(os.tmpdir(), "pm-webpack-"));
+  const webpackConfig = `const path = require("path");
+
+const nextConfig = {
+  webpack(config, { dev }) {
+    if (dev) {
+      config.resolve.alias["@"] = path.join(__dirname, "src");
+    }
+    return config;
+  },
+};
+
+module.exports = nextConfig;
+`;
+  fs.writeFileSync(path.join(webpackProject, "next.config.js"), webpackConfig);
+  const wpResult = wireStampLoader(webpackProject);
+  check("wireStampLoader: inserts into an existing webpack() before its `return config;`, doesn't disturb the rest",
+    wpResult.applied === true, JSON.stringify(wpResult));
+  const wpAfter = fs.readFileSync(path.join(webpackProject, "next.config.js"), "utf8");
+  check("wireStampLoader: the webpack() edit is dev-gated, keeps the pre-existing alias config intact, still valid",
+    /if \(dev\) \{[^}]*config\.module\.rules\.push/.test(wpAfter) &&
+      wpAfter.includes('config.resolve.alias["@"]') &&
+      ts.createSourceFile("next.config.js", wpAfter, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX).parseDiagnostics.length === 0);
+  fs.rmSync(webpackProject, { recursive: true, force: true });
+
+  // a turbopack key already present in some other shape -> must not guess/overwrite it
+  const existingTurbopack = fs.mkdtempSync(path.join(os.tmpdir(), "pm-existing-turbopack-"));
+  fs.writeFileSync(path.join(existingTurbopack, "next.config.ts"), `const nextConfig = {
+  turbopack: { resolveAlias: { "@": "./src" } },
+};
+export default nextConfig;
+`);
+  const existingResult = wireStampLoader(existingTurbopack);
+  check("wireStampLoader: an existing turbopack key in an unfamiliar shape is left untouched, not guessed at",
+    existingResult.applied === false && /not guessing/.test(existingResult.reason) &&
+      fs.readFileSync(path.join(existingTurbopack, "next.config.ts"), "utf8").includes('resolveAlias: { "@": "./src" }') &&
+      !fs.readFileSync(path.join(existingTurbopack, "next.config.ts"), "utf8").includes("stamp-loader"));
+  fs.rmSync(existingTurbopack, { recursive: true, force: true });
 }
 
 /* ---- picker server: receives the finished plan, nothing else ---- */
