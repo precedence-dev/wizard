@@ -28,14 +28,20 @@ reads your source into an LLM — the analysis (`@precedence/cli`) and the edits
 ## The picker
 
 Real click-on-the-page DOM picking, against your actual running app — not a
-page rendered for you. A bookmarklet the CLI prints injects an overlay into
-whatever page you're on: hover highlights elements, click resolves the DOM
-node to a catalog entry via React's dev-mode fiber (`_debugSource` — file +
-line, set by the classic Babel/React dev transform), and shows that element's
-actions and branches to pick from. This is the **fiber** rung of the same
-resolution order `@precedence/cli`'s own README documents (stamp loader ->
-fiber -> a file-scoped fallback) — no bundler config edited, no stamp loader
-required.
+page rendered for you. The wizard opens a small install page
+(`http://127.0.0.1:51820/install`, a fixed port so it survives across wizard
+runs — drag the button to your bookmarks bar once) and copies the bookmarklet
+to your clipboard too. Click it on your running app: hover highlights
+elements, click resolves the DOM node to a catalog entry via React's dev-mode
+fiber (`_debugSource` — file + line, set by the classic Babel/React dev
+transform), and shows that element's actions and branches to pick from. This
+is the **fiber** rung of the same resolution order `@precedence/cli`'s own
+README documents (stamp loader -> fiber -> a file-scoped fallback) — no
+bundler config edited, no stamp loader required.
+
+(A plain link pasted into the address bar doesn't work for `javascript:` URIs
+— Chrome/Firefox strip that scheme on paste as an anti-phishing measure —
+which is why this is a real draggable link on a page, not text to copy.)
 
 The honest limit: `_debugSource` isn't present on every build — notably not
 Next.js's default SWC compiler or React 19. The overlay says so plainly on a

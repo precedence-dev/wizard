@@ -103,7 +103,7 @@ check("scan: writes .precedence/catalog.pcs, valid JSON", JSON.parse(fs.readFile
 
 /* ---- picker server: real click-on-the-DOM picking, via an injected overlay ---- */
 {
-  const picker = await startPickServer(catalog);
+  const picker = await startPickServer(catalog, 0); // :0 = any free port, never touch the real default port during tests
   check("picker: serves a real listening URL", /^http:\/\/127\.0\.0\.1:\d+$/.test(picker.url));
   check("picker: the bookmarklet is a javascript: URI pointing at this server",
     picker.bookmarklet.startsWith("javascript:") && decodeURIComponent(picker.bookmarklet).includes(picker.url + "/overlay.js"));
@@ -120,6 +120,10 @@ check("scan: writes .precedence/catalog.pcs, valid JSON", JSON.parse(fs.readFile
   check("picker: /catalog.pcs serves the real catalog, CORS-enabled for the target app's origin",
     (await catalogRes.json()).tool === "precedence" && catalogRes.headers.get("access-control-allow-origin") === "*");
 
+  const installHtml = await (await fetch(picker.url + "/install")).text();
+  check("picker: /install serves a real, draggable bookmarklet link (not raw text to copy)",
+    installHtml.includes(`href="${picker.bookmarklet}"`));
+
   const okBranch = catalog.elements.flatMap((e) => e.actions).flatMap((a) => a.branches).find((b) => /ok/.test(b.conditionKey));
   const chosen = { events: [{ name: "checkout_ok", properties: ["result"], anchors: [{ id: okBranch.id, fingerprint: okBranch.fingerprint }] }] };
   const postRes = await fetch(picker.url + "/plan", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(chosen) });
@@ -130,6 +134,18 @@ check("scan: writes .precedence/catalog.pcs, valid JSON", JSON.parse(fs.readFile
 
   const afterClose = await fetch(picker.url + "/catalog.pcs").catch(() => null);
   check("picker: the server closes itself once a plan is saved", afterClose === null);
+}
+
+/* ---- picker server: falls back to a free port when its default is already taken ---- */
+{
+  const net = await import("node:net");
+  const blocker = net.createServer();
+  await new Promise((r) => blocker.listen(51820, "127.0.0.1", r));
+  const picker = await startPickServer(catalog); // no explicit port -> the real default, which is occupied
+  check("picker: falls back to a free port instead of failing when the default port is busy",
+    !picker.url.endsWith(":51820") && /^http:\/\/127\.0\.0\.1:\d+$/.test(picker.url));
+  picker.close();
+  await new Promise((r) => blocker.close(r));
 }
 
 /* ---- plan: scaffold from the real catalog, for --ci (no browser to run the picker in) ---- */

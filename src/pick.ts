@@ -18,7 +18,20 @@
  */
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
+import { execFile } from "node:child_process";
 import type { Catalog } from "@precedence/cli";
+
+/** Fixed so the bookmarklet's URL survives across wizard runs — drag it once. */
+const DEFAULT_PORT = 51820;
+
+function openBrowser(url: string): void {
+  // Windows' "start" is a cmd.exe builtin, not a real executable — invoke it
+  // through cmd.exe directly (no shell:true) so args are never re-parsed by a shell.
+  const [cmd, args] = process.platform === "win32" ? ["cmd", ["/c", "start", "", url]]
+    : process.platform === "darwin" ? ["open", [url]]
+    : ["xdg-open", [url]];
+  try { execFile(cmd, args); } catch { /* best-effort only */ }
+}
 
 const cors = (res: http.ServerResponse) => {
   res.setHeader("access-control-allow-origin", "*");
@@ -194,9 +207,25 @@ export interface PickServer {
   close: () => void;
 }
 
-/** The server on its own — no console output — so it's directly testable.
- *  Resolves once the socket is actually listening, so `url` is real, not guessed. */
-export function startPickServer(catalog: Catalog): Promise<PickServer> {
+const INSTALL_PAGE = (bookmarkletUrl: string) => `<!doctype html>
+<html><head><meta charset="utf-8"><title>Precedence picker</title>
+<style>
+  body { font: 15px -apple-system, Segoe UI, sans-serif; max-width: 480px; margin: 60px auto; color: #1a1a1a; line-height: 1.5; }
+  .btn { display: inline-block; padding: 10px 18px; background: #1a1a1a; color: #fff; border-radius: 6px; text-decoration: none; font-weight: 600; cursor: grab; }
+  .step { margin-top: 24px; color: #555; }
+</style></head>
+<body>
+  <h2>Precedence picker</h2>
+  <p>Drag this to your bookmarks bar (this fixed link keeps working across wizard runs):</p>
+  <a class="btn" href="${bookmarkletUrl}" onclick="return false">Precedence picker</a>
+  <div class="step">1. Open your app's dev server in this browser<br>
+  2. Click the bookmark you just dragged<br>
+  3. Alt+Shift+P, then click an element</div>
+</body></html>`;
+
+/** The server on its own — no console output, no clipboard access — so it's
+ *  directly testable. Resolves once the socket is actually listening. */
+export function startPickServer(catalog: Catalog, port = DEFAULT_PORT): Promise<PickServer> {
   return new Promise((resolveServer) => {
     let server!: http.Server;
     const plan = new Promise<{ events: unknown[] }>((resolvePlan) => {
@@ -211,6 +240,10 @@ export function startPickServer(catalog: Catalog): Promise<PickServer> {
         } else if (req.method === "GET" && req.url === "/catalog.pcs") {
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify(catalog));
+        } else if (req.method === "GET" && req.url === "/install") {
+          const { port: p } = server.address() as AddressInfo;
+          res.writeHead(200, { "content-type": "text/html" });
+          res.end(INSTALL_PAGE(bookmarklet(`http://127.0.0.1:${p}`)));
         } else if (req.method === "POST" && req.url === "/plan") {
           let body = "";
           req.on("data", (c) => (body += c));
@@ -226,19 +259,36 @@ export function startPickServer(catalog: Catalog): Promise<PickServer> {
           res.end();
         }
       });
-      server.listen(0, "127.0.0.1", () => {
-        const { port } = server.address() as AddressInfo;
-        const url = `http://127.0.0.1:${port}`;
+      // A fixed default port means the bookmarklet's URL is stable across
+      // wizard runs — drag it once, it keeps working. Falls back to a random
+      // free port if something else is already using the default.
+      server.once("error", () => server.listen(0, "127.0.0.1"));
+      server.listen(port, "127.0.0.1");
+      server.once("listening", () => {
+        const { port: p } = server.address() as AddressInfo;
+        const url = `http://127.0.0.1:${p}`;
         resolveServer({ url, bookmarklet: bookmarklet(url), plan, close: () => server.close() });
       });
     });
   });
 }
 
+function copyToClipboard(text: string): void {
+  const [cmd, args] = process.platform === "win32" ? ["cmd", ["/c", "clip"]]
+    : process.platform === "darwin" ? ["pbcopy", []]
+    : ["xclip", ["-selection", "clipboard"]];
+  try {
+    const child = execFile(cmd, args);
+    child.stdin?.end(text);
+  } catch { /* best-effort only */ }
+}
+
 export async function runPicker(catalog: Catalog): Promise<{ events: unknown[] }> {
   const server = await startPickServer(catalog);
-  console.log(`\n  picker ready — drag this to your bookmarks bar (or paste into the address bar while on your running app):\n`);
-  console.log(`    ${server.bookmarklet}\n`);
-  console.log(`  Then: open your dev server in the browser, click the bookmarklet, Alt+Shift+P, click an element.`);
+  const installUrl = `${server.url}/install`;
+  copyToClipboard(server.bookmarklet);
+  console.log(`\n  picker: ${installUrl}`);
+  console.log(`  (opening it now — drag the button to your bookmarks bar once; the link is copied to your clipboard too)`);
+  openBrowser(installUrl);
   return server.plan;
 }
