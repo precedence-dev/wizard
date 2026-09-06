@@ -1,0 +1,28 @@
+{
+  "name": "@precedence/wizard",
+  "version": "0.1.0",
+  "description": "Interactive setup: scan a repo, pick outcomes, instrument them. The one-command path into Precedence.",
+  "license": "MIT",
+  "bin": {
+    "precedence-wizard": "bin/precedence-wizard.js"
+  },
+  "files": [
+    "dist/",
+    "bin/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
+    "prepare": "npm run build",
+    "test": "npm run build && node test/invariants.mjs"
+  },
+  "dependencies": {
+    "@precedence/cli": "file:../Precedence/packages/cli",
+    "@precedence/instrument": "file:../precedence-instrument",
+    "typescript": "^5.6.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0"
+  }
+}
