@@ -6,12 +6,11 @@ One command from a bare repo to instrumented code:
 npx @precedence/wizard
 ```
 
-Same shape as `@sentry/wizard` and `@posthog/wizard`: check preconditions,
-authenticate, do the work, show exactly what changed, and leave a manual
-fallback wherever automation can't run. Unlike PostHog's wizard, nothing here
-reads your source into an LLM — the analysis (`@precedence/cli`) and the edits
-(`@precedence/instrument`) are both fully deterministic, same as Sentry's.
-"Wizard" describes the UX, not the mechanism.
+Checks preconditions, does the work, shows exactly what changed, and leaves
+a manual fallback wherever automation can't run. Nothing here reads your
+source into an LLM — the analysis (`@precedence/cli`) and the edits
+(`@precedence/instrument`) are both fully deterministic. "Wizard" describes
+the UX, not the mechanism.
 
 ## What it does
 
@@ -20,64 +19,67 @@ reads your source into an LLM — the analysis (`@precedence/cli`) and the edits
    run always lands in its own reviewable commit), detects the framework.
 2. **Scan** — runs the real analyzer against your detected source dirs,
    writes `.precedence/catalog.pcs`.
-3. **Pick outcomes** — opens a local picker in your browser (see below);
-   `--ci` skips the browser and scaffolds a draft `plan.json` instead.
-4. **Instrument** — applies `.precedence/plan.json` via `@precedence/instrument`,
+3. **Wire the picker into your app** — a one-time step; see below.
+4. **Pick outcomes** — opens your dev server with the picker already armed;
+   `--ci` skips this and scaffolds a draft `plan.json` instead.
+5. **Instrument** — applies `.precedence/plan.json` via `@precedence/instrument`,
    prints exactly which files changed.
 
 ## The picker
 
-Real click-on-the-page DOM picking, against your actual running app — not a
-page rendered for you. The wizard opens a small install page
-(`http://127.0.0.1:51820/install`, a fixed port so it survives across wizard
-runs — drag the button to your bookmarks bar once) and copies the bookmarklet
-to your clipboard too. Click it on your running app: hover highlights
-elements, click resolves the DOM node to a catalog entry via React's dev-mode
-fiber (`_debugSource` — file + line, set by the classic Babel/React dev
-transform), and shows that element's actions and branches to pick from. This
-is the **fiber** rung of the same resolution order `@precedence/cli`'s own
-README documents (stamp loader -> fiber -> a file-scoped fallback) — no
-bundler config edited, no stamp loader required.
+The picker (`<PrecedenceDevtools />`, from `@precedence/sdk`) is a real
+component imported into your own app — not a script injected across a page
+boundary. `src/wire.ts` inserts it into `app/layout.tsx` the first time you
+run the wizard: a real, deterministic AST edit (via the TypeScript compiler
+API), applied only when the file matches the exact `<body>{children}</body>`
+shape it can insert into safely. Anything else — Pages Router, Vite, CRA, or
+a `layout.tsx` that doesn't match — gets the same snippet printed for a
+one-time manual paste instead; this never guesses.
 
-(A plain link pasted into the address bar doesn't work for `javascript:` URIs
-— Chrome/Firefox strip that scheme on paste as an anti-phishing measure —
-which is why this is a real draggable link on a page, not text to copy.)
+Once wired, `src/pick.ts` opens your dev server with `?precedence=pick`
+appended, which the component checks for on mount and opens itself,
+click-picking already armed (Alt+Shift+P also opens it manually at any
+time). It resolves a click via React's dev-mode fiber (`_debugSource` — file
++ line) to a catalog entry — the honest limit there (not present on every
+build, e.g. Next.js's default SWC compiler or React 19) is documented in
+`@precedence/sdk`'s own README, since that's where the resolution logic
+actually lives now.
 
-The honest limit: `_debugSource` isn't present on every build — notably not
-Next.js's default SWC compiler or React 19. The overlay says so plainly on a
-failed resolution rather than guessing, and points at the stamp loader (wired
-into your bundler config) as the fix, which this wizard doesn't automate yet.
+This wizard's own job, mechanically: run the scan, wire the component in
+once, publish `catalog.pcs` to `public/` so the component can fetch it
+same-origin, then run a tiny local HTTP server (`src/pick.ts`) whose only
+job is to receive the finished plan the component POSTs back, before handing
+off to `@precedence/instrument`.
 
-`--ci` (no browser to run a picker in) scaffolds a draft `plan.json` instead —
-every anchor in it real, copied off actual outcome branches — for hand-editing
-before running again. See `src/plan.ts`.
+`--ci` (no browser to run the picker in) scaffolds a draft `plan.json`
+instead — every anchor in it real, copied off actual outcome branches — for
+hand-editing before running again. See `src/plan.ts`.
 
-Mechanically: `src/pick.ts` starts a tiny local, CORS-enabled HTTP server (no
-framework) that serves the overlay script and the catalog, and the CLI awaits
-its `POST /plan` before continuing to instrument. The resolution algorithm
-itself (`fiberSource`, `findElement`) is real, typed, unit-tested TypeScript —
-embedded into the browser script via `.toString()`, so the tested code and the
-shipped code are provably the same text, not a hand-kept-in-sync copy.
+## Two honest gaps, not hidden
 
-## One honest gap, not hidden
+- **No account/registry backend yet.** The real flow is meant to be:
+  authenticate, then fetch `@precedence/cli` from a gated registry so the
+  scan still runs entirely on your machine. That backend doesn't exist yet,
+  so this repo depends on `@precedence/cli` as a local `file:` sibling
+  instead (same temporary stand-in `@precedence/instrument` uses for the
+  same reason — see that package's README).
+- **`@precedence/sdk` isn't published anywhere yet.** Wiring adds it to
+  your `package.json` as a real dependency, but `npm install` won't resolve
+  it until it's actually published somewhere.
 
-**No account/registry backend yet.** The real flow is meant to be:
-authenticate, then fetch `@precedence/cli` from a gated registry so the scan
-still runs entirely on your machine. That backend doesn't exist yet, so this
-repo depends on `@precedence/cli` as a local `file:` sibling instead (same
-temporary stand-in `@precedence/instrument` uses for the same reason — see
-that package's README). Marked in `src/cli.ts` at the point it'll be
-replaced; it doesn't change the shape of the commands around it.
+Both are marked in `src/cli.ts` at the point they'll be replaced; neither
+changes the shape of the commands around them.
 
 ## Structure
 
 ```
 src/
-├── cli.ts      orchestration: preconditions -> scan -> pick -> instrument
-├── git.ts       clean-tree / branch checks
-├── detect.ts    framework + source-dir detection, file collection
-├── scan.ts      wraps @precedence/cli's buildCatalog
-├── pick.ts       the picker: bookmarklet, overlay, fiber-based resolution, local server
-├── plan.ts      reads plan.json, or scaffolds a draft (--ci) from the catalog
-└── apply.ts     wraps @precedence/instrument's instrument()
+├── cli.ts     orchestration: preconditions -> scan -> wire -> pick -> instrument
+├── git.ts      clean-tree / branch checks
+├── detect.ts   framework + source-dir detection, file collection
+├── scan.ts     wraps @precedence/cli's buildCatalog; publishes catalog.pcs for the picker
+├── wire.ts     inserts <PrecedenceDevtools /> into app/layout.tsx, a real AST edit
+├── pick.ts     opens the dev server with ?precedence=pick, receives the finished plan
+├── plan.ts     reads plan.json, or scaffolds a draft (--ci) from the catalog
+└── apply.ts    wraps @precedence/instrument's instrument()
 ```

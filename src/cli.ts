@@ -1,27 +1,25 @@
 #!/usr/bin/env node
 /**
  * `precedence-wizard`: one command, from a bare repo to instrumented code.
- * Same shape as @sentry/wizard and @posthog/wizard: check preconditions,
- * authenticate, do the work, show exactly what changed, leave a manual
- * fallback wherever automation can't run yet.
+ * Checks preconditions, authenticates, does the work, shows exactly what
+ * changed, leaves a manual fallback wherever automation can't run yet.
  *
- * One step here is a genuine stand-in, not finished:
+ * Two genuine stand-ins, not finished:
  *   - auth: there's no registry/account backend yet. `core` is depended on
  *     as a local `file:` sibling for now (see README) instead of fetched
  *     post-login.
- * The picker (src/pick.ts) is real, but it's the "file-scoped pick one"
- * fallback @precedence/cli's README already documents, not click-on-the-page
- * DOM picking — that needs either the stamp loader wired into the target's
- * bundler config or React's dev-mode fiber, and this wizard doesn't touch
- * either yet. --ci skips the browser entirely and writes the same kind of
- * draft plan.json a human would produce by hand, for scripted/CI runs.
- * Everything else (git preconditions, the scan, applying a plan) is real.
+ *   - @precedence/sdk isn't published anywhere yet, so the dependency
+ *     this adds to your package.json is real but `npm install` won't
+ *     resolve it until it is.
+ * Everything else — git preconditions, the scan, wiring <PrecedenceDevtools />
+ * into app/layout.tsx, launching the picker, applying a plan — is real.
  */
 import { isGitRepo, isClean, currentBranch } from "./git";
 import { detectProject } from "./detect";
-import { scan, writeCatalog } from "./scan";
+import { scan, writeCatalog, publishCatalogForDevtools } from "./scan";
 import { readPlan, writeDraftPlan, writePlan, planPath } from "./plan";
 import { runPicker } from "./pick";
+import { wireDevtools, addDevtoolsDependency, SNIPPET } from "./wire";
 import { apply } from "./apply";
 import type { Plan } from "@precedence/instrument";
 
@@ -30,16 +28,17 @@ const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const bold = (s: string) => `\x1b[1m${s}\x1b[0m`;
 const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
 
-interface Opts { allowDirty: boolean; track?: string; types: boolean; ci: boolean; help: boolean; }
+interface Opts { allowDirty: boolean; track?: string; types: boolean; ci: boolean; devUrl: string; help: boolean; }
 
 function parseArgs(argv: string[]): Opts {
-  const o: Opts = { allowDirty: false, types: false, ci: false, help: false };
+  const o: Opts = { allowDirty: false, types: false, ci: false, devUrl: "http://localhost:3000", help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--allow-dirty") o.allowDirty = true;
     else if (a === "--types") o.types = true;
     else if (a === "--ci") o.ci = true;
     else if (a === "--track") o.track = argv[++i];
+    else if (a === "--dev-url") o.devUrl = argv[++i];
     else if (a === "-h" || a === "--help") o.help = true;
   }
   return o;
@@ -54,6 +53,7 @@ OPTIONS
   --allow-dirty     proceed with uncommitted changes present
   --types           resolve declared types (slower, enables interprocedural outcomes)
   --track <spec>    "track from @/lib/analytics" adds the import; default console.log
+  --dev-url <url>   your running dev server (default http://localhost:3000)
   --ci              non-interactive: write a draft plan.json instead of opening the picker
   -h, --help
 `;
@@ -98,17 +98,43 @@ async function main(): Promise<void> {
     return;
   }
 
-  // 5. pick outcomes
   let plan = readPlan(cwd) as Plan | null;
+  if (!plan && opts.ci) {
+    const draft = writeDraftPlan(cwd, catalog);
+    console.log(yellow(`\n  --ci: wrote a draft plan instead of opening the picker:`));
+    console.log(`  ${cyan(draft)}`);
+    console.log(`  Edit it, then run again (without --ci to apply, or with --ci once it's ready).`);
+    return;
+  }
+
+  // 5. wire <PrecedenceDevtools /> into the app + pick outcomes
   if (!plan) {
-    if (opts.ci) {
-      const draft = writeDraftPlan(cwd, catalog);
-      console.log(yellow(`\n  --ci: wrote a draft plan instead of opening the picker:`));
-      console.log(`  ${cyan(draft)}`);
-      console.log(`  Edit it, then run again (without --ci to apply, or with --ci once it's ready).`);
+    const wire = wireDevtools(cwd);
+    const publishedFirstTime = wire.reason !== "already wired";
+
+    if (wire.applied && publishedFirstTime) {
+      addDevtoolsDependency(cwd);
+      console.log(`\n  wired ${cyan("<PrecedenceDevtools />")} into ${cyan(wire.file!)}`);
+      console.log(yellow(`  @precedence/sdk isn't published anywhere yet, so \`npm install\` won't resolve it until it is — see this repo's README.`));
+      console.log(`  Once it resolves: npm install, restart your dev server, then run this again to pick outcomes.`);
       return;
     }
-    plan = (await runPicker(catalog)) as Plan;
+    if (!wire.applied) {
+      console.log(yellow(`\n  couldn't auto-wire the devtools panel (${wire.reason}).`));
+      console.log(`  Add this once, by hand:\n`);
+      for (const line of SNIPPET.split("\n")) console.log(`    ${line}`);
+      console.log(`\n  Then run this again to pick outcomes.`);
+      return;
+    }
+
+    const catalogPath = publishCatalogForDevtools(cwd, catalog);
+    if (!catalogPath) {
+      console.log(yellow("\n  no public/ dir found — couldn't publish catalog.pcs for the devtools panel to fetch. Create one and run again."));
+      return;
+    }
+    console.log(`  published ${cyan(catalogPath)}`);
+
+    plan = (await runPicker(opts.devUrl)) as Plan;
     writePlan(cwd, plan);
     console.log(`  saved ${cyan(planPath(cwd))}`);
   }

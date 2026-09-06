@@ -36,3 +36,12 @@ export function writeCatalog(cwd: string, catalog: Catalog): string {
   fs.writeFileSync(out, JSON.stringify(catalog, null, 2) + "\n");
   return out;
 }
+
+/** <PrecedenceDevtools />'s default catalogUrl fetches this same-origin from the target app. */
+export function publishCatalogForDevtools(cwd: string, catalog: Catalog): string | null {
+  const publicDir = path.join(cwd, "public");
+  if (!fs.existsSync(publicDir)) return null;
+  const out = path.join(publicDir, "precedence-catalog.pcs");
+  fs.writeFileSync(out, JSON.stringify(catalog));
+  return out;
+}

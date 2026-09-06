@@ -1,8 +1,9 @@
 /**
  * @precedence/wizard invariants: exercises the real, working pieces (git
- * preconditions, detection, scan, the picker server, plan scaffold, apply)
- * end to end against a throwaway git repo. The only stub is auth — see
- * README — there's nothing real to test there yet.
+ * preconditions, detection, scan, wiring the devtools panel into a layout
+ * file, the picker's plan-receiving server, plan scaffold, apply) end to
+ * end against a throwaway git repo. The only stub is auth — see README —
+ * there's nothing real to test there yet.
  */
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -15,10 +16,11 @@ const dist = (p) => pathToFileURL(path.resolve(here, "../dist", p)).href;
 
 const { isGitRepo, isClean } = await import(dist("git.js"));
 const { detectProject, collectFiles } = await import(dist("detect.js"));
-const { scan, writeCatalog } = await import(dist("scan.js"));
+const { scan, writeCatalog, publishCatalogForDevtools } = await import(dist("scan.js"));
 const { scaffoldPlan, writeDraftPlan, readPlan } = await import(dist("plan.js"));
 const { apply } = await import(dist("apply.js"));
-const { startPickServer, fiberSource, findElement } = await import(dist("pick.js"));
+const { startPickServer } = await import(dist("pick.js"));
+const { findLayoutFile, wireDevtools, addDevtoolsDependency, SNIPPET } = await import(dist("wire.js"));
 
 let fails = 0;
 const check = (name, ok, detail) => {
@@ -77,62 +79,86 @@ check("scan: found the guard branch (!user) and the result.ok outcome",
 const catalogFile = writeCatalog(tmp, catalog);
 check("scan: writes .precedence/catalog.pcs, valid JSON", JSON.parse(fs.readFileSync(catalogFile, "utf8")).tool === "precedence");
 
-/* ---- resolution algorithm: the exact functions shipped into the browser overlay ---- */
+check("publishCatalogForDevtools: no public/ dir yet -> null, doesn't create one itself",
+  publishCatalogForDevtools(tmp, catalog) === null);
+fs.mkdirSync(path.join(tmp, "public"));
+const published = publishCatalogForDevtools(tmp, catalog);
+check("publishCatalogForDevtools: with public/ present, writes catalog.pcs there for same-origin fetch",
+  published === path.join(tmp, "public", "precedence-catalog.pcs") &&
+    JSON.parse(fs.readFileSync(published, "utf8")).tool === "precedence");
+
+/* ---- wire: a real Next.js App Router layout.tsx, AST-edited ---- */
 {
-  // a fake DOM node with a React-style fiber tag, several hops up from where _debugSource lives
-  const leafFiber = { return: { return: { _debugSource: { fileName: "src/Checkout.tsx", lineNumber: 42 }, return: null } } };
-  const domNode = { __reactFiber$abc123: leafFiber, parentElement: null };
-  check("fiberSource: walks up the fiber's `return` chain to find _debugSource",
-    JSON.stringify(fiberSource(domNode)) === JSON.stringify({ fileName: "src/Checkout.tsx", lineNumber: 42 }));
+  const layoutDir = path.join(tmp, "app");
+  fs.mkdirSync(layoutDir);
+  const layoutPath = path.join(layoutDir, "layout.tsx");
+  const original = `export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html><body>
+      {children}
+    </body></html>
+  );
+}
+`;
+  fs.writeFileSync(layoutPath, original);
 
-  const plainDiv = { parentElement: domNode }; // no fiber tag on this node itself, but its DOM parent has one
-  check("fiberSource: climbs parentElement when the clicked node itself has no fiber tag",
-    fiberSource(plainDiv)?.lineNumber === 42);
+  check("wire: finds app/layout.tsx", findLayoutFile(tmp) === layoutPath);
 
-  check("fiberSource: a node with no fiber anywhere in its ancestry resolves to null (the SWC/React 19 case)",
-    fiberSource({ parentElement: { parentElement: null } }) === null);
+  const wired = wireDevtools(tmp);
+  check("wire: applies a real edit to a <body>{children}</body> layout",
+    wired.applied === true && wired.file === layoutPath);
+  const after = fs.readFileSync(layoutPath, "utf8");
+  check("wire: adds the import and the JSX line, still valid syntax",
+    after.includes('import { PrecedenceDevtools } from "@precedence/sdk/devtools";') &&
+      after.includes('{process.env.NODE_ENV !== "production" && <PrecedenceDevtools />}'));
 
-  const el = catalog.elements[0];
-  check("findElement: resolves an absolute-looking path by file suffix + a small line tolerance",
-    findElement(catalog, "C:\\\\repo\\\\" + el.file, el.line + 1)?.ref === el.ref);
-  check("findElement: a real file but a line far from any element resolves to null, not a wrong guess",
-    findElement(catalog, el.file, el.line + 500) === null);
-  check("findElement: a file not in the catalog resolves to null",
-    findElement(catalog, "src/NotScanned.tsx", 1) === null);
+  const again = wireDevtools(tmp);
+  check("wire: re-running is idempotent — recognises it's already wired, doesn't duplicate the edit",
+    again.applied === true && again.reason === "already wired" &&
+      (after.match(/PrecedenceDevtools/g) || []).length === (fs.readFileSync(layoutPath, "utf8").match(/PrecedenceDevtools/g) || []).length);
+
+  fs.writeFileSync(path.join(tmp, "package.json"), JSON.stringify({ dependencies: { react: "^18.0.0" } }));
+  check("addDevtoolsDependency: adds @precedence/sdk to package.json", addDevtoolsDependency(tmp) === true);
+  check("addDevtoolsDependency: real semver, not a stray file: path",
+    JSON.parse(fs.readFileSync(path.join(tmp, "package.json"), "utf8")).dependencies["@precedence/sdk"] === "^0.1.0");
+  check("addDevtoolsDependency: re-running doesn't re-add it (already there)", addDevtoolsDependency(tmp) === false);
+
+  check("SNIPPET: the manual fallback names the exact import + JSX to paste by hand",
+    SNIPPET.includes('@precedence/sdk/devtools') && SNIPPET.includes("PrecedenceDevtools"));
+
+  // a shape this can't confidently insert into — no <body>{children}</body> — must not guess
+  const weirdProject = fs.mkdtempSync(path.join(os.tmpdir(), "pm-weird-layout-"));
+  fs.mkdirSync(path.join(weirdProject, "app"));
+  fs.writeFileSync(path.join(weirdProject, "app", "layout.tsx"), `export default function X() { return <div>no body/children here</div>; }`);
+  const notWired = wireDevtools(weirdProject);
+  check("wire: a layout.tsx that doesn't match <body>{children}</body> is left untouched, not guessed at",
+    notWired.applied === false && /not guessing/.test(notWired.reason) &&
+      fs.readFileSync(path.join(weirdProject, "app", "layout.tsx"), "utf8") === `export default function X() { return <div>no body/children here</div>; }`);
+  fs.rmSync(weirdProject, { recursive: true, force: true });
+
+  const noLayoutProject = fs.mkdtempSync(path.join(os.tmpdir(), "pm-no-layout-"));
+  check("wire: no layout.tsx at all -> a clear reason, not an exception",
+    wireDevtools(noLayoutProject).reason.includes("no app/layout.tsx found"));
+  fs.rmSync(noLayoutProject, { recursive: true, force: true });
 }
 
-/* ---- picker server: real click-on-the-DOM picking, via an injected overlay ---- */
+/* ---- picker server: receives the finished plan, nothing else ---- */
 {
-  const picker = await startPickServer(catalog, 0); // :0 = any free port, never touch the real default port during tests
+  const picker = await startPickServer(0); // :0 = any free port, never touch the real default port during tests
   check("picker: serves a real listening URL", /^http:\/\/127\.0\.0\.1:\d+$/.test(picker.url));
-  check("picker: the bookmarklet is a javascript: URI pointing at this server",
-    picker.bookmarklet.startsWith("javascript:") && decodeURIComponent(picker.bookmarklet).includes(picker.url + "/overlay.js"));
 
-  const overlayRes = await fetch(picker.url + "/overlay.js");
-  const overlayJs = await overlayRes.text();
-  check("overlay.js: served with a JS content-type", (overlayRes.headers.get("content-type") || "").includes("javascript"));
-  check("overlay.js: syntactically valid (parses as a function body)",
-    (() => { try { new Function(overlayJs); return true; } catch { return false; } })());
-  check("overlay.js: does real fiber-based resolution (_debugSource), no catalog text baked in — fetched at click time",
-    overlayJs.includes("_debugSource") && overlayJs.includes("/catalog.pcs") && !overlayJs.includes(catalog.elements[0].file));
-
-  const catalogRes = await fetch(picker.url + "/catalog.pcs");
-  check("picker: /catalog.pcs serves the real catalog, CORS-enabled for the target app's origin",
-    (await catalogRes.json()).tool === "precedence" && catalogRes.headers.get("access-control-allow-origin") === "*");
-
-  const installHtml = await (await fetch(picker.url + "/install")).text();
-  check("picker: /install serves a real, draggable bookmarklet link (not raw text to copy)",
-    installHtml.includes(`href="${picker.bookmarklet}"`));
+  const preflight = await fetch(picker.url + "/plan", { method: "OPTIONS" });
+  check("picker: answers the CORS preflight for the cross-origin POST from the target app", preflight.status === 204);
 
   const okBranch = catalog.elements.flatMap((e) => e.actions).flatMap((a) => a.branches).find((b) => /ok/.test(b.conditionKey));
   const chosen = { events: [{ name: "checkout_ok", properties: ["result"], anchors: [{ id: okBranch.id, fingerprint: okBranch.fingerprint }] }] };
   const postRes = await fetch(picker.url + "/plan", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(chosen) });
-  check("picker: POST /plan (what the overlay's Save button sends) is accepted", postRes.ok);
+  check("picker: POST /plan (what <PrecedenceDevtools />'s Save button sends) is accepted", postRes.ok);
   const resolved = await picker.plan;
   check("picker: the server's `plan` promise resolves with exactly what was POSTed",
     JSON.stringify(resolved) === JSON.stringify(chosen));
 
-  const afterClose = await fetch(picker.url + "/catalog.pcs").catch(() => null);
+  const afterClose = await fetch(picker.url + "/plan", { method: "OPTIONS" }).catch(() => null);
   check("picker: the server closes itself once a plan is saved", afterClose === null);
 }
 
@@ -141,7 +167,7 @@ check("scan: writes .precedence/catalog.pcs, valid JSON", JSON.parse(fs.readFile
   const net = await import("node:net");
   const blocker = net.createServer();
   await new Promise((r) => blocker.listen(51820, "127.0.0.1", r));
-  const picker = await startPickServer(catalog); // no explicit port -> the real default, which is occupied
+  const picker = await startPickServer(); // no explicit port -> the real default, which is occupied
   check("picker: falls back to a free port instead of failing when the default port is busy",
     !picker.url.endsWith(":51820") && /^http:\/\/127\.0\.0\.1:\d+$/.test(picker.url));
   picker.close();
