@@ -32,9 +32,9 @@ export function writeCatalog(cwd: string, catalog: Catalog): string {
   const dir = path.dirname(out);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(out, JSON.stringify(catalog, null, 2) + "\n");
-  // catalog.pcs is a regenerable scan artifact; plan.json is the reviewed source
-  // of truth and stays tracked. This keeps a rescan from dirtying the tree.
+  // A courtesy for git users: the catalog is a regenerable scan artifact, the
+  // plan is the reviewed source of truth and stays tracked.
   const ignore = path.join(dir, ".gitignore");
-  if (!fs.existsSync(ignore)) fs.writeFileSync(ignore, "# generated scan artifact, safe to delete\ncatalog.pcs\n");
+  if (!fs.existsSync(ignore)) fs.writeFileSync(ignore, "# regenerable scan artifact\ncatalog.pcs\n");
   return out;
 }

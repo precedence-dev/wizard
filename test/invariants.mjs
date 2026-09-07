@@ -1,8 +1,8 @@
 /**
- * @precedence/wizard invariants: git preconditions, project detection, the
- * in-process scan, the --ci draft-plan scaffold, and apply — end to end against
- * a throwaway git repo. The only stub is auth (see README); nothing to test
- * there yet. The wizard modifies nothing in the target app.
+ * @precedence/wizard invariants: project detection, the in-process scan, the
+ * --ci draft-plan scaffold, apply, and the CLI's own arg/diff contract — end to
+ * end against a throwaway directory. No VCS involved. The only stub is auth
+ * (see README); nothing to test there yet.
  */
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -13,7 +13,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dist = (p) => pathToFileURL(path.resolve(here, "../dist", p)).href;
 
-const { isGitRepo, isClean, isCleanForApply } = await import(dist("git.js"));
 const { detectProject, collectFiles } = await import(dist("detect.js"));
 const { scan, writeCatalog } = await import(dist("scan.js"));
 const { scaffoldPlan, writeDraftPlan, readPlan, planPath, catalogPath } = await import(dist("plan.js"));
@@ -27,7 +26,6 @@ const check = (name, ok, detail) => {
 };
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pm-wizard-"));
-const run = (args) => execFileSync("git", args, { cwd: tmp, encoding: "utf8" });
 
 const FIXTURE = `import { useState } from "react";
 export function Checkout({ user }: { user: { id: string } | null }) {
@@ -42,30 +40,16 @@ export function Checkout({ user }: { user: { id: string } | null }) {
 declare function chargeCard(): Promise<{ ok: boolean; receiptUrl?: string }>;
 `;
 
-/* ---- git preconditions, against a real repo ---- */
-check("git: an uninitialised directory is not a git repo", !isGitRepo(fs.mkdtempSync(path.join(os.tmpdir(), "pm-notgit-"))));
-
-run(["init", "-q"]);
-run(["config", "user.email", "t@t.com"]);
-run(["config", "user.name", "t"]);
-check("git: an initialised repo is recognised", isGitRepo(tmp));
-check("git: a fresh repo with nothing to commit is clean", isClean(tmp));
-
 fs.mkdirSync(path.join(tmp, "src"));
 fs.writeFileSync(path.join(tmp, "src", "Checkout.tsx"), FIXTURE);
 fs.writeFileSync(path.join(tmp, "package.json"), JSON.stringify({ dependencies: { react: "^18.0.0" } }));
-check("git: an untracked file makes the tree dirty", !isClean(tmp));
-
-run(["add", "-A"]);
-run(["commit", "-q", "-m", "init"]);
-check("git: after committing, the tree is clean again", isClean(tmp));
 
 /* ---- detection ---- */
 const project = detectProject(tmp);
 check("detect: package.json with a react dependency -> framework: react", project.framework === "react");
-check("detect: an existing src/ dir is used, not the repo root", project.srcDirs.includes("src") && !project.srcDirs.includes("."));
+check("detect: an existing src/ dir is used, not the project root", project.srcDirs.includes("src") && !project.srcDirs.includes("."));
 const files = collectFiles(path.join(tmp, "src"));
-check("detect: finds the .tsx fixture, skips node_modules/.git implicitly", files.length === 1 && files[0].endsWith("Checkout.tsx"));
+check("detect: finds the .tsx fixture", files.length === 1 && files[0].endsWith("Checkout.tsx"));
 
 /* ---- scan: the real analyzer, run in-process ---- */
 const { catalog, fileCount } = scan(tmp, project, {});
@@ -77,10 +61,8 @@ check("scan: found the guard branch (!user) and the result.ok outcome",
 const catalogFile = writeCatalog(tmp, catalog);
 check("scan: writes .precedence/catalog.pcs, valid JSON", catalogFile === catalogPath(tmp) && JSON.parse(fs.readFileSync(catalogFile, "utf8")).tool === "precedence");
 const dotIgnore = fs.readFileSync(path.join(tmp, ".precedence", ".gitignore"), "utf8");
-check("scan: drops a .precedence/.gitignore that ignores the catalog but not the plan",
+check("scan: drops a .precedence/.gitignore for the catalog but not the plan",
   /(^|\n)catalog\.pcs\s*($|\n)/.test(dotIgnore) && !/plan\.json/.test(dotIgnore));
-check("git: isCleanForApply tolerates the scan artifacts on an otherwise-committed tree",
-  isCleanForApply(tmp));
 
 /* ---- plan: scaffold from the real catalog (--ci, no picker) ---- */
 check("plan: no plan.json yet -> readPlan returns null", readPlan(tmp) === null);
@@ -105,21 +87,13 @@ check("apply: instruments the real fixture in place, on disk",
 check("apply: re-running is idempotent (already-instrumented, unchanged)",
   apply(tmp, project, plan, "track").changed.length === 0);
 
-/* ---- isCleanForApply: source edits and an uncommitted plan both block --apply ---- */
-fs.rmSync(planPath(tmp)); // the draft plan from earlier; start this section from just the source edit
-check("git: a modified source file blocks --apply", !isCleanForApply(tmp));
-run(["checkout", "--", "src/Checkout.tsx"]);
-check("git: with the source reverted, the scan artifacts alone are fine again", isCleanForApply(tmp));
-fs.writeFileSync(planPath(tmp), JSON.stringify(plan));
-check("git: an uncommitted plan.json blocks --apply (it must be reviewed first)", !isCleanForApply(tmp));
-fs.rmSync(planPath(tmp));
-
 /* ---- parseArgs: the CLI's own contract ---- */
 check("cli: --help is recognised, not rejected as an unknown option", parseArgs(["--help"]).help === true);
 check("cli: -h too", parseArgs(["-h"]).help === true);
 check("cli: --emit runtime is accepted", parseArgs(["--emit", "runtime"]).emit === "runtime");
 check("cli: a bogus --emit value is rejected", (() => { try { parseArgs(["--emit", "sideways"]); return false; } catch { return true; } })());
 check("cli: an unknown flag is rejected", (() => { try { parseArgs(["--nope"]); return false; } catch { return true; } })());
+check("cli: the removed --allow-dirty is now an unknown flag", (() => { try { parseArgs(["--allow-dirty"]); return false; } catch { return true; } })());
 check("cli: --track carries its value", parseArgs(["--track", "track from @/lib/analytics"]).track === "track from @/lib/analytics");
 
 /* ---- the published binary actually runs main() (not just when run directly) ---- */
@@ -132,7 +106,23 @@ check("cli: --track carries its value", parseArgs(["--track", "track from @/lib/
     status === 0 && /USAGE/.test(out) && /--track/.test(out), JSON.stringify({ status, out: out.slice(0, 120) }));
 }
 
-/* ---- previewDiff: the engineering-review surface ---- */
+/* ---- the wizard runs in a plain directory, no VCS required ---- */
+{
+  const plainDir = fs.mkdtempSync(path.join(os.tmpdir(), "pm-nogit-"));
+  fs.mkdirSync(path.join(plainDir, "src"));
+  fs.writeFileSync(path.join(plainDir, "src", "Checkout.tsx"), FIXTURE);
+  fs.writeFileSync(path.join(plainDir, "package.json"), JSON.stringify({ dependencies: { react: "^18.0.0" } }));
+  const bin = path.resolve(here, "../bin/precedence-wizard.js");
+  let out = "", status = 0;
+  try { out = execFileSync("node", [bin, "--no-open"], { cwd: plainDir, encoding: "utf8" }); }
+  catch (e) { out = (e.stdout || "") + (e.stderr || ""); status = e.status ?? 1; }
+  check("cli: a scan in a non-git directory succeeds (exit 0, catalog written)",
+    status === 0 && /attach point/.test(out) && fs.existsSync(path.join(plainDir, ".precedence", "catalog.pcs")),
+    JSON.stringify({ status, out: out.slice(0, 160) }));
+  fs.rmSync(plainDir, { recursive: true, force: true });
+}
+
+/* ---- previewDiff: the review surface ---- */
 {
   const before = ["function onSubmit() {", "  if (!user) return;", "  charge();", "}"].join("\n");
   const after = ["function onSubmit() {", "  if (!user) return;", '  try { track("x", {}); } catch {}', "  charge();", "}"].join("\n");

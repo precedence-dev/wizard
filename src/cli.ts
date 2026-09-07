@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 /**
- * `precedence-wizard`: scan a repo, open the picker, preview, then apply.
+ * `precedence-wizard`: scan a project, open the picker, preview, then apply.
  *
- *   npx @precedence/wizard          # scan -> tells you how to pick
- *   # ...pick outcomes in @precedence/viewer, save .precedence/plan.json...
- *   npx @precedence/wizard          # sees the plan, instruments it
+ *   npx @precedence/wizard                    # scan -> open @precedence/viewer
+ *   # ...pick outcomes, save .precedence/plan.json...
+ *   npx @precedence/wizard --track "<spec>"           # preview the source diff
+ *   npx @precedence/wizard --track "<spec>" --apply   # write it
  *
  *   npx @precedence/wizard --ci     # scan -> scaffold a draft plan.json to hand-edit
  *
- * Framework-agnostic: it never modifies your app. The scan runs the real
- * analyzer in-process; picking happens in the standalone viewer; applying is
- * @precedence/instrument. (A live in-app picker — click the running UI — is
- * future work; the previous React one was removed to keep the toolchain
- * framework-neutral.)
+ * Framework-agnostic and VCS-agnostic: it reads and writes plain files, the
+ * scan runs the real analyzer in-process, picking happens in the standalone
+ * viewer, applying is @precedence/instrument. --apply is a separate step from
+ * the preview, so it's on you to have committed first if you want that.
  *
  * One genuine stand-in: there's no account/registry backend yet, so
  * @precedence/cli is a local `file:` sibling (see README).
@@ -20,7 +20,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
-import { isGitRepo, currentBranch, isCleanForApply } from "./git";
 import { detectProject } from "./detect";
 import { scan, writeCatalog } from "./scan";
 import { readPlan, writeDraftPlan, planPath } from "./plan";
@@ -33,7 +32,6 @@ const bold = (s: string) => `\x1b[1m${s}\x1b[0m`;
 const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
 
 interface Opts {
-  allowDirty: boolean;
   apply: boolean;
   track?: string;
   emit: "direct" | "runtime";
@@ -45,11 +43,10 @@ interface Opts {
 }
 
 function parseArgs(argv: string[]): Opts {
-  const o: Opts = { allowDirty: false, apply: false, emit: "direct", types: false, ci: false, open: true, help: false };
+  const o: Opts = { apply: false, emit: "direct", types: false, ci: false, open: true, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "-h" || a === "--help") o.help = true;
-    else if (a === "--allow-dirty") o.allowDirty = true;
     else if (a === "--apply") o.apply = true;
     else if (a === "--types") o.types = true;
     else if (a === "--ci") o.ci = true;
@@ -82,7 +79,6 @@ OPTIONS
   --emit <mode>     direct (default) or runtime
   --runtime <file>  direct mode: write delegated-link listener here on --apply
   --apply           write source only after the preview has been reviewed
-  --allow-dirty     let --apply proceed with uncommitted source changes
   --types           resolve declared types (slower, enables interprocedural outcomes)
   --ci              non-interactive: write a draft plan.json instead of the pick step
   --no-open         scan but do not launch the browser picker
@@ -105,8 +101,8 @@ function launchViewer(catalog: string): void {
 
 /** A unified-ish diff for the preview: LCS over lines so an inserted import and
  *  an inserted call each read as their own `+` block, not one replaced region.
- *  Prefix/suffix fallback on huge files (the real review is `git diff` after
- *  --apply either way). */
+ *  Prefix/suffix fallback on huge files (the real review is the on-disk diff
+ *  after --apply either way). */
 function previewDiff(file: string, before: string, after: string): string {
   const a = before.split("\n"), b = after.split("\n");
   const head = [`--- a/${file}`, `+++ b/${file}`];
@@ -170,14 +166,6 @@ function main(): void {
 
   console.log(bold("\nprecedence-wizard\n"));
 
-  // 1. preconditions
-  if (!isGitRepo(cwd)) {
-    console.error("error: not a git repository. Run this inside your project's repo.");
-    process.exitCode = 2;
-    return;
-  }
-  console.log(`  git: on ${dim(currentBranch(cwd) || "HEAD")}`);
-
   const project = detectProject(cwd);
   const plan = readPlan(cwd) as Plan | null;
   if (!plan) {
@@ -190,12 +178,12 @@ function main(): void {
     if (!catalog.attachPoints) { console.log(yellow("\n  nothing trackable found — nothing to pick.")); return; }
     if (opts.ci) {
       const draft = writeDraftPlan(cwd, catalog);
-      console.log(`\n  wrote draft ${cyan(draft)} — edit it, commit it, then preview.`);
+      console.log(`\n  wrote draft ${cyan(draft)} — edit it, then preview with --track.`);
       return;
     }
     console.log(bold("\n  browser picker: define the shared event vocabulary"));
     console.log("  Growth/marketing: select outcomes, name them, define what each means, and choose properties.");
-    console.log(`  Export the plan to ${cyan(planPath(cwd))}, then commit that plan for engineering review.`);
+    console.log(`  Export the plan to ${cyan(planPath(cwd))} and keep it in the repo for engineering review.`);
     if (opts.open) launchViewer(catalogFile);
     return;
   }
@@ -218,11 +206,6 @@ function main(): void {
   changed.forEach((f) => console.log("\n" + previewDiff(f.file, f.before, f.after)));
   if (proposed.runtimeModule) console.log(dim("\n  Links/bare buttons need a generated listener: pass --runtime src/pm-tracking.ts when applying."));
   if (!opts.apply) { console.log(`\n  review the diff, then rerun with ${cyan("--apply")}.`); return; }
-  if (!opts.allowDirty && !isCleanForApply(cwd)) {
-    console.error("\nerror: commit the reviewed plan and any source changes before --apply (generated .precedence/catalog.pcs is allowed). Pass --allow-dirty only to override.");
-    process.exitCode = 1;
-    return;
-  }
 
   const result = apply(cwd, project, plan, instrumentOpts);
   if (opts.runtime && result.runtimeModule) {
@@ -246,7 +229,7 @@ function main(): void {
     console.log(yellow(`\n  ${result.skipped.length} anchor(s) skipped:`));
     for (const s of result.skipped) console.log(`    ${s.id ? s.id + ": " : ""}${s.reason}`);
   }
-  if (result.changed.length) console.log(`\n  ${bold("next")}: review with \`git diff\`, then commit.`);
+  if (result.changed.length) console.log(`\n  ${bold("next")}: review the diff and commit it on its own.`);
   if (opts.emit === "runtime") console.log(dim("\n  Runtime mode also needs installPrecedence({ track, planUrl }) at your app root and the committed plan deployed to that URL."));
 }
 
