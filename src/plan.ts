@@ -57,6 +57,10 @@ export function planPath(cwd: string): string {
   return path.join(cwd, ".precedence", "plan.json");
 }
 
+export function catalogPath(cwd: string): string {
+  return path.join(cwd, ".precedence", "catalog.pcs");
+}
+
 export function readPlan(cwd: string): unknown | null {
   try {
     return JSON.parse(fs.readFileSync(planPath(cwd), "utf8"));

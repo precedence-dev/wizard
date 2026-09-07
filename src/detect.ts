@@ -29,7 +29,7 @@ export function detectProject(cwd: string): ProjectInfo {
   return { framework, srcDirs: srcDirs.length ? srcDirs : ["."] };
 }
 
-const EXT = /\.(tsx|jsx|ts)$/;
+const EXT = /\.(tsx|jsx|ts|js|mts|cts|mjs|cjs)$/;
 const SKIP_DIR = new Set(["node_modules", ".git", ".next", "dist", "build", ".precedence"]);
 
 /** Recursively collect .tsx/.jsx/.ts files under a directory. No git/--changed-since

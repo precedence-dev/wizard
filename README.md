@@ -1,124 +1,85 @@
 # @precedence/wizard
 
-One command from a bare repo to instrumented code, one continuous run — no
-re-typing it partway through, even the first time on a project:
+The one-command path into Precedence: scan a repo, pick the outcomes worth
+tracking in a browser, review the generated diff, apply it. It never modifies
+your app on its own — the scan runs the real analyzer in-process, picking
+happens in the standalone [`@precedence/viewer`](https://github.com/precedence-dev/sdk/tree/main/packages/viewer),
+applying is [`@precedence/instrument`](https://github.com/precedence-dev/instrument).
+Nothing reads your source into an LLM; every step is deterministic.
 
-```
+## The flow
+
+```sh
+# 1. scan → .precedence/catalog.pcs, and open the browser picker
 npx @precedence/wizard
+
+#    ...in the picker: growth/marketing select outcomes, name them, write what
+#    each one means, choose properties, then export → .precedence/plan.json.
+#    Commit that plan — it is the reviewable source of truth for the events.
+
+# 2. preview the exact source diff the plan produces (writes nothing)
+npx @precedence/wizard --track "track from @/lib/analytics"
+
+# 3. apply it, on a clean tree, so the instrumentation lands in its own commit
+npx @precedence/wizard --track "track from @/lib/analytics" --apply
 ```
 
-Checks preconditions, does the work, shows exactly what changed, and leaves
-a manual fallback wherever automation can't run. Nothing here reads your
-source into an LLM — the analysis (`@precedence/cli`) and the edits
-(`@precedence/instrument`) are both fully deterministic. "Wizard" describes
-the UX, not the mechanism.
+`--ci` replaces step 1's browser with a scaffolded draft `plan.json` (every
+anchor real, off the catalog) to hand-edit and commit.
+
+## Why a browser step
+
+Deciding *what* is a meaningful event is product knowledge. The picker lets
+growth/marketing select, name, and **define** events off a catalog of real code
+paths — no codebase access, no ticket. Engineering's part is bounded: the one
+`--track` import, the preview diff, the commit. The exported `plan.json` (names,
+definitions, properties, source anchors) is what both sides review and what stays
+in the repo as the answer to "what does this event mean".
 
 ## What it does
 
-1. **Preconditions** — inside a git repo, clean working tree (refuses
-   otherwise, same rule `@precedence/instrument`'s `--apply` enforces, so a
-   run always lands in its own reviewable commit), detects the framework.
-2. **Scan** — runs the real analyzer against your detected source dirs,
-   writes `.precedence/catalog.pcs`.
-3. **Wire the picker (and, where possible, the stamp loader) into your app**
-   — one-time steps; see below.
-4. **Pick outcomes** — opens your dev server with the picker already armed;
-   `--ci` skips this and scaffolds a draft `plan.json` instead.
-5. **Instrument** — applies `.precedence/plan.json` via `@precedence/instrument`,
-   prints exactly which files changed.
+1. **Preconditions** — must be inside a git repo. (The clean-tree rule applies
+   only at `--apply`, so a scan never demands a commit first.)
+2. **Scan** — runs the real analyzer against the detected source dirs, writes
+   `.precedence/catalog.pcs` and a `.precedence/.gitignore` that keeps the
+   regenerable catalog out of version control while leaving `plan.json` tracked.
+3. **Pick** — in `@precedence/viewer`, launched automatically (`--no-open` to
+   skip). Export the plan to `.precedence/plan.json` and commit it.
+4. **Preview** — `--track <spec>` (required for direct mode) prints the source
+   diff and any drift warnings / skipped anchors. Nothing is written.
+5. **Apply** — `--apply` writes the reviewed diff. Refuses unless the tree is
+   clean apart from the scan artifacts (so the reviewed `plan.json` and any
+   source changes are already committed); `--allow-dirty` overrides.
 
-## The picker
+| flag | meaning |
+| --- | --- |
+| `--track <spec>` | e.g. `"track from @/lib/analytics"` — required before direct instrumentation |
+| `--emit direct` \| `runtime` | `direct` bakes `track(...)` calls in; `runtime` emits `globalThis.__pm?.(…)` + needs [`@precedence/sdk`](https://github.com/precedence-dev/sdk) at the app root |
+| `--runtime <file>` | direct mode: write the delegated-link listener here on `--apply` |
+| `--apply` | write source (after you've reviewed the preview) |
+| `--allow-dirty` | let `--apply` proceed with other uncommitted changes present |
+| `--types` | resolve declared types (slower; enables interprocedural outcomes) |
+| `--ci` | non-interactive: scaffold a draft `plan.json` instead of the pick step |
+| `--no-open` | scan but don't launch the browser |
 
-The picker (`<PrecedenceDevtools />`, from `@precedence/sdk`) is a real
-component imported into your own app — not a script injected across a page
-boundary. `src/wire.ts` inserts it into `app/layout.tsx` the first time you
-run the wizard: a real, deterministic AST edit (via the TypeScript compiler
-API), applied only when the file matches the exact `<body>{children}</body>`
-shape it can insert into safely. Anything else — Pages Router, Vite, CRA, or
-a `layout.tsx` that doesn't match — gets the same snippet printed for a
-one-time manual paste instead; this never guesses.
+## One honest gap
 
-`wire.ts` also tries to wire `@precedence/cli`'s stamp loader into
-`next.config` at the same time — copies the file in, then either adds a new
-dev-gated `turbopack.rules` property (when there's no `turbopack` key yet)
-or inserts into an existing `webpack(config, { dev }) { ... return config; }`
-right before the return, both modeled on real, working configs. This is what
-lets the picker resolve a click on Next.js's default SWC compiler or React
-19, where React's dev-mode fiber alone can't. Anything less exact — an
-unfamiliar existing `turbopack` key, a `webpack()` that doesn't match — gets
-the same edit printed for a manual paste; it's optional, since the fiber
-path still covers classic Babel-compiled dev builds on its own.
-
-Once wired, `src/pick.ts` opens your dev server with `?precedence=pick`
-appended, which the component checks for on mount and opens itself,
-click-picking already armed (Alt+Shift+P also opens it manually at any
-time). Every pick/rename/remove POSTs the current full plan immediately —
-this wizard overwrites `.precedence/plan.json` with it on the spot, not
-just once at the end, and a GET rehydrates the panel with whatever's
-already been picked (so navigating around the app to find more elements
-doesn't lose anything). There's no "Save" button to click: the file is
-always already correct, so the terminal — press Enter when you're done
-picking — is the "I'm done" signal, not a browser action.
-
-This wizard's own job, mechanically: run the scan, wire the component (and
-the stamp loader) in once, publish `catalog.pcs` to `public/` so the
-component can fetch it same-origin, then run a tiny local HTTP server
-(`src/pick.ts`) that serves/persists the plan on every GET/POST, before
-handing off to `@precedence/instrument`.
-
-## Why the first run doesn't need a second one
-
-Wiring `<PrecedenceDevtools />` in adds a real dependency your project
-doesn't have installed yet; wiring the stamp loader in changes a config
-Next.js only reads at startup. Both used to mean "stop, go run a command
-yourself, then re-run the wizard" — that's unnecessary friction the wizard
-can absorb itself:
-
-- **The install runs automatically** (`src/wire.ts`'s `installDependencies`
-  — detects npm/yarn/pnpm from the lockfile present, runs it for real). This
-  is safe to do without asking each time specifically because the git-clean
-  precondition already guarantees there's nothing uncommitted for it to put
-  at risk.
-- **Waiting for the dev server is polling, not a keypress**
-  (`src/devserver.ts`). Restarting it is still something only you can
-  actually do — the wizard doesn't own that process and won't try to kill
-  or relaunch it — but detecting that it's back up is a plain HTTP check,
-  not something that needs you to tell it. Enter stays reserved for the one
-  step that's a genuine human decision: "are you done picking outcomes."
-
-`--ci` (no browser to run the picker in) scaffolds a draft `plan.json`
-instead — every anchor in it real, copied off actual outcome branches — for
-hand-editing before running again. See `src/plan.ts`.
-
-## Two honest gaps, not hidden
-
-- **No account/registry backend yet.** The real flow is meant to be:
-  authenticate, then fetch `@precedence/cli` from a gated registry so the
-  scan still runs entirely on your machine. That backend doesn't exist yet,
-  so this repo depends on `@precedence/cli` as a local `file:` sibling
-  instead (same temporary stand-in `@precedence/instrument` uses for the
-  same reason — see that package's README).
-- **`@precedence/sdk` isn't published anywhere yet.** Wiring adds it to
-  your `package.json` as a real dependency, and the wizard really does run
-  the install — but it fails today with a real 404, since there's nowhere
-  for it to resolve from yet. The wizard says so plainly and stops rather
-  than pretending; once it's published this step just starts working, same
-  command.
-
-Both are marked in `src/cli.ts` at the point they'll be replaced; neither
-changes the shape of the commands around them.
+**No account/registry backend yet.** The intended flow is: authenticate, then
+fetch `@precedence/cli` from a gated registry so the scan still runs entirely on
+your machine. Until that exists, this repo depends on `@precedence/cli` (and
+`@precedence/instrument`, `@precedence/viewer`) as local `file:` siblings — the
+same stand-in `@precedence/instrument` uses; see that package's README. Marked
+in `src/cli.ts` at the point it'll be replaced; it doesn't change the shape of
+the commands.
 
 ## Structure
 
 ```
 src/
-├── cli.ts     orchestration: preconditions -> scan -> wire -> pick -> instrument
-├── git.ts      clean-tree / branch checks
-├── detect.ts   framework + source-dir detection, file collection
-├── scan.ts     wraps @precedence/cli's buildCatalog; publishes catalog.pcs for the picker
-├── wire.ts       inserts <PrecedenceDevtools /> into app/layout.tsx and the stamp loader into next.config (real AST edits), plus installDependencies
-├── devserver.ts  waitForDevServer — polls for the target app coming (back) up, instead of asking for a keypress
-├── pick.ts       opens the dev server with ?precedence=pick, persists every pick to plan.json immediately
-├── plan.ts       reads plan.json, or scaffolds a draft (--ci) from the catalog
-└── apply.ts      wraps @precedence/instrument's instrument()
+├── cli.ts     orchestration: preconditions → scan → (pick, by you) → preview → apply
+├── git.ts     isGitRepo / isClean / isCleanForApply
+├── detect.ts  framework + source-dir detection, file collection
+├── scan.ts    wraps @precedence/cli's buildCatalog; writes .precedence/{catalog.pcs,.gitignore}
+├── plan.ts    reads plan.json, or scaffolds a draft (--ci) from the catalog
+└── apply.ts   wraps @precedence/instrument's instrument() — preview() and apply()
 ```

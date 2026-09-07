@@ -1,17 +1,18 @@
 /**
- * Runs the real analyzer, in-process, against files this project detected.
+ * Runs the real analyzer, in-process, against the files this project detected.
  *
- * This calls @precedence/cli directly rather than shelling out to `precedence`,
- * same as @precedence/instrument does — one code path, no stdout-parsing.
- * Today that's a temporary `file:` sibling dependency (see this repo's README);
- * once there's a real auth-gated registry, this step is where the install
- * happens before the require, not a different code path.
+ * Calls @precedence/cli directly rather than shelling out to `precedence` —
+ * same as @precedence/instrument does, one code path, no stdout-parsing. Today
+ * @precedence/cli is a `file:` sibling (see README); once there's an
+ * auth-gated registry, the install happens here, before the require — not a
+ * different code path.
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { buildCatalog } from "@precedence/cli/build";
 import type { Catalog } from "@precedence/cli";
 import { collectFiles, ProjectInfo } from "./detect";
+import { catalogPath } from "./plan";
 
 export interface ScanResult { catalog: Catalog; fileCount: number; }
 
@@ -22,26 +23,18 @@ export function scan(cwd: string, project: ProjectInfo, opts: { types?: boolean;
     abs,
     source: fs.readFileSync(abs, "utf8"),
   }));
-  const catalog = buildCatalog(inputs, {
-    types: opts.types,
-    tsconfig: opts.tsconfig,
-  });
+  const catalog = buildCatalog(inputs, { types: opts.types, tsconfig: opts.tsconfig });
   return { catalog, fileCount: files.length };
 }
 
 export function writeCatalog(cwd: string, catalog: Catalog): string {
-  const dir = path.join(cwd, ".precedence");
+  const out = catalogPath(cwd);
+  const dir = path.dirname(out);
   fs.mkdirSync(dir, { recursive: true });
-  const out = path.join(dir, "catalog.pcs");
   fs.writeFileSync(out, JSON.stringify(catalog, null, 2) + "\n");
-  return out;
-}
-
-/** <PrecedenceDevtools />'s default catalogUrl fetches this same-origin from the target app. */
-export function publishCatalogForDevtools(cwd: string, catalog: Catalog): string | null {
-  const publicDir = path.join(cwd, "public");
-  if (!fs.existsSync(publicDir)) return null;
-  const out = path.join(publicDir, "precedence-catalog.pcs");
-  fs.writeFileSync(out, JSON.stringify(catalog));
+  // catalog.pcs is a regenerable scan artifact; plan.json is the reviewed source
+  // of truth and stays tracked. This keeps a rescan from dirtying the tree.
+  const ignore = path.join(dir, ".gitignore");
+  if (!fs.existsSync(ignore)) fs.writeFileSync(ignore, "# generated scan artifact, safe to delete\ncatalog.pcs\n");
   return out;
 }

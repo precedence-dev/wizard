@@ -22,6 +22,18 @@ export function isClean(cwd: string): boolean {
   return out !== null && out.trim() === "";
 }
 
+/** The catalog (and the `.gitignore` the scan drops beside it) is a disposable
+ * scan artifact, not a source edit — the one thing a plan can coexist with while
+ * the user previews/applies. The plan itself is deliberately NOT exempt: commit
+ * it before code changes so its business definition and its instrumentation
+ * review together. */
+export function isCleanForApply(cwd: string): boolean {
+  const out = run(["status", "--porcelain", "--untracked-files=all"], cwd);
+  if (out === null) return false;
+  const allowed = new Set([".precedence/catalog.pcs", ".precedence/.gitignore"]);
+  return out.split(/\r?\n/).filter(Boolean).every((line) => allowed.has(line.slice(3)));
+}
+
 export function currentBranch(cwd: string): string | undefined {
   return run(["rev-parse", "--abbrev-ref", "HEAD"], cwd)?.trim() || undefined;
 }

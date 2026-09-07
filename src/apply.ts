@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { instrument, Plan } from "@precedence/instrument";
+import { instrument, Plan, type InstrumentResult } from "@precedence/instrument";
 import { collectFiles, ProjectInfo } from "./detect";
 
 export interface ApplyResult {
@@ -8,17 +8,37 @@ export interface ApplyResult {
   applied: number;
   skipped: { id?: string; reason: string }[];
   warnings: { detail: string }[];
+  runtimeModule?: string;
 }
 
-export function apply(cwd: string, project: ProjectInfo, plan: Plan, track?: string): ApplyResult {
+export interface WizardInstrumentOpts {
+  track?: string;
+  emit?: "direct" | "runtime";
+  types?: boolean;
+}
+
+function inputsFor(cwd: string, project: ProjectInfo) {
   const files = project.srcDirs.flatMap((d) => collectFiles(path.join(cwd, d)));
-  const inputs = files.map((abs) => ({
+  return files.map((abs) => ({
     file: path.relative(cwd, abs).replace(/\\/g, "/"),
     abs,
     source: fs.readFileSync(abs, "utf8"),
   }));
+}
 
-  const result = instrument(inputs, plan, { track });
+function toOpts(trackOrOpts?: string | WizardInstrumentOpts): WizardInstrumentOpts {
+  return typeof trackOrOpts === "string" ? { track: trackOrOpts } : trackOrOpts || {};
+}
+
+/** Resolve the proposed edits without writing anything — the review step before apply(). */
+export function preview(cwd: string, project: ProjectInfo, plan: Plan, trackOrOpts?: string | WizardInstrumentOpts): InstrumentResult {
+  const opts = toOpts(trackOrOpts);
+  return instrument(inputsFor(cwd, project), plan, opts);
+}
+
+export function apply(cwd: string, project: ProjectInfo, plan: Plan, trackOrOpts?: string | WizardInstrumentOpts): ApplyResult {
+  const inputs = inputsFor(cwd, project);
+  const result = instrument(inputs, plan, toOpts(trackOrOpts));
 
   const changed: string[] = [];
   for (const f of result.files) {
@@ -33,5 +53,6 @@ export function apply(cwd: string, project: ProjectInfo, plan: Plan, track?: str
     applied: result.applied.length,
     skipped: result.skipped,
     warnings: result.warnings,
+    runtimeModule: result.runtimeModule,
   };
 }

@@ -18,11 +18,12 @@
     "test": "npm run build && node test/invariants.mjs"
   },
   "dependencies": {
-    "@precedence/cli": "file:../Precedence/packages/cli",
-    "@precedence/instrument": "file:../precedence-instrument",
-    "typescript": "^5.6.3"
+    "@precedence/cli": "file:../core/packages/cli",
+    "@precedence/instrument": "file:../instrument",
+    "@precedence/viewer": "file:../sdk/packages/viewer"
   },
   "devDependencies": {
-    "@types/node": "^20.14.0"
+    "@types/node": "^20.14.0",
+    "typescript": "^5.6.3"
   }
 }
