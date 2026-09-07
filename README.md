@@ -1,6 +1,7 @@
 # @precedence/wizard
 
-One command from a bare repo to instrumented code:
+One command from a bare repo to instrumented code, one continuous run — no
+re-typing it partway through, even the first time on a project:
 
 ```
 npx @precedence/wizard
@@ -65,6 +66,26 @@ component can fetch it same-origin, then run a tiny local HTTP server
 (`src/pick.ts`) that serves/persists the plan on every GET/POST, before
 handing off to `@precedence/instrument`.
 
+## Why the first run doesn't need a second one
+
+Wiring `<PrecedenceDevtools />` in adds a real dependency your project
+doesn't have installed yet; wiring the stamp loader in changes a config
+Next.js only reads at startup. Both used to mean "stop, go run a command
+yourself, then re-run the wizard" — that's unnecessary friction the wizard
+can absorb itself:
+
+- **The install runs automatically** (`src/wire.ts`'s `installDependencies`
+  — detects npm/yarn/pnpm from the lockfile present, runs it for real). This
+  is safe to do without asking each time specifically because the git-clean
+  precondition already guarantees there's nothing uncommitted for it to put
+  at risk.
+- **Waiting for the dev server is polling, not a keypress**
+  (`src/devserver.ts`). Restarting it is still something only you can
+  actually do — the wizard doesn't own that process and won't try to kill
+  or relaunch it — but detecting that it's back up is a plain HTTP check,
+  not something that needs you to tell it. Enter stays reserved for the one
+  step that's a genuine human decision: "are you done picking outcomes."
+
 `--ci` (no browser to run the picker in) scaffolds a draft `plan.json`
 instead — every anchor in it real, copied off actual outcome branches — for
 hand-editing before running again. See `src/plan.ts`.
@@ -78,8 +99,11 @@ hand-editing before running again. See `src/plan.ts`.
   instead (same temporary stand-in `@precedence/instrument` uses for the
   same reason — see that package's README).
 - **`@precedence/sdk` isn't published anywhere yet.** Wiring adds it to
-  your `package.json` as a real dependency, but `npm install` won't resolve
-  it until it's actually published somewhere.
+  your `package.json` as a real dependency, and the wizard really does run
+  the install — but it fails today with a real 404, since there's nowhere
+  for it to resolve from yet. The wizard says so plainly and stops rather
+  than pretending; once it's published this step just starts working, same
+  command.
 
 Both are marked in `src/cli.ts` at the point they'll be replaced; neither
 changes the shape of the commands around them.
@@ -92,8 +116,9 @@ src/
 ├── git.ts      clean-tree / branch checks
 ├── detect.ts   framework + source-dir detection, file collection
 ├── scan.ts     wraps @precedence/cli's buildCatalog; publishes catalog.pcs for the picker
-├── wire.ts     inserts <PrecedenceDevtools /> into app/layout.tsx and the stamp loader into next.config, real AST edits
-├── pick.ts     opens the dev server with ?precedence=pick, persists every pick to plan.json immediately
-├── plan.ts     reads plan.json, or scaffolds a draft (--ci) from the catalog
-└── apply.ts    wraps @precedence/instrument's instrument()
+├── wire.ts       inserts <PrecedenceDevtools /> into app/layout.tsx and the stamp loader into next.config (real AST edits), plus installDependencies
+├── devserver.ts  waitForDevServer — polls for the target app coming (back) up, instead of asking for a keypress
+├── pick.ts       opens the dev server with ?precedence=pick, persists every pick to plan.json immediately
+├── plan.ts       reads plan.json, or scaffolds a draft (--ci) from the catalog
+└── apply.ts      wraps @precedence/instrument's instrument()
 ```

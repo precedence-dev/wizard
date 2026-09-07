@@ -4,23 +4,25 @@
  * Checks preconditions, authenticates, does the work, shows exactly what
  * changed, leaves a manual fallback wherever automation can't run yet.
  *
- * Two genuine stand-ins, not finished:
+ * One genuine stand-in, not finished:
  *   - auth: there's no registry/account backend yet. `core` is depended on
  *     as a local `file:` sibling for now (see README) instead of fetched
  *     post-login.
- *   - @precedence/sdk isn't published anywhere yet, so the dependency
- *     this adds to your package.json is real but `npm install` won't
- *     resolve it until it is.
- * Everything else — git preconditions, the scan, wiring <PrecedenceDevtools />
- * into app/layout.tsx, wiring the stamp loader into next.config, launching
- * the picker, applying a plan — is real.
+ * Everything else is real, in one continuous run — no re-typing the command
+ * partway through: git preconditions, the scan, wiring <PrecedenceDevtools />
+ * into app/layout.tsx, wiring the stamp loader into next.config, running the
+ * install either just added, waiting for the dev server to come up (polled,
+ * not a keypress — see devserver.ts), launching the picker, applying a plan.
+ * (@precedence/sdk isn't published anywhere yet, so that install step can
+ * still fail today — the wizard says so plainly rather than pretending.)
  */
 import { isGitRepo, isClean, currentBranch } from "./git";
 import { detectProject } from "./detect";
 import { scan, writeCatalog, publishCatalogForDevtools } from "./scan";
 import { readPlan, writeDraftPlan, planPath } from "./plan";
 import { runPicker } from "./pick";
-import { wireDevtools, addDevtoolsDependency, SNIPPET, wireStampLoader, STAMP_SNIPPET } from "./wire";
+import { wireDevtools, addDevtoolsDependency, SNIPPET, wireStampLoader, STAMP_SNIPPET, installDependencies } from "./wire";
+import { waitForDevServer } from "./devserver";
 import { apply } from "./apply";
 import type { Plan } from "@precedence/instrument";
 
@@ -133,15 +135,28 @@ async function main(): Promise<void> {
     } else if (stamp.reason !== "already wired") {
       console.log(`  wired the stamp loader into ${cyan(stamp.file!)}`);
     }
+    const wiredStampNow = stamp.applied && stamp.reason !== "already wired";
 
     if (wiredDevtoolsNow) {
-      console.log(yellow(`\n  @precedence/sdk isn't published anywhere yet, so \`npm install\` won't resolve it until it is — see this repo's README.`));
-      console.log(`  Once it resolves: npm install, restart your dev server, then run this again to pick outcomes.`);
-      return;
+      console.log(`\n  installing ${cyan("@precedence/sdk")}...`);
+      const install = installDependencies(cwd);
+      if (!install.ok) {
+        console.log(yellow(`  ${install.manager} install failed: ${install.error}`));
+        console.log(`  @precedence/sdk also isn't published anywhere yet, so this may just mean that — see this repo's README.`);
+        console.log(`  Install it yourself once it resolves, then run this again to pick outcomes.`);
+        return;
+      }
+      console.log(`  ${install.manager} install done`);
     }
-    if (stamp.applied && stamp.reason !== "already wired") {
-      console.log(`\n  Restart your dev server (a build config changed), then run this again to pick outcomes.`);
-      return;
+
+    if (wiredDevtoolsNow || wiredStampNow) {
+      console.log(`\n  make sure your dev server is ${wiredStampNow ? "restarted" : "running"} (waiting for ${dim(opts.devUrl)}...)`);
+      const up = await waitForDevServer(opts.devUrl);
+      if (!up) {
+        console.log(yellow(`\n  gave up waiting after 5 minutes — run this again once it's up.`));
+        return;
+      }
+      console.log(`  dev server detected, continuing...`);
     }
 
     const catalogPath = publishCatalogForDevtools(cwd, catalog);

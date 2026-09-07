@@ -20,7 +20,8 @@ const { scan, writeCatalog, publishCatalogForDevtools } = await import(dist("sca
 const { scaffoldPlan, writeDraftPlan, readPlan } = await import(dist("plan.js"));
 const { apply } = await import(dist("apply.js"));
 const { startPickServer } = await import(dist("pick.js"));
-const { findLayoutFile, wireDevtools, addDevtoolsDependency, SNIPPET, findNextConfigFile, wireStampLoader } = await import(dist("wire.js"));
+const { findLayoutFile, wireDevtools, addDevtoolsDependency, SNIPPET, findNextConfigFile, wireStampLoader, detectPackageManager, installDependencies } = await import(dist("wire.js"));
+const { waitForDevServer } = await import(dist("devserver.js"));
 const ts = (await import("typescript")).default;
 
 let fails = 0;
@@ -222,6 +223,70 @@ export default nextConfig;
       fs.readFileSync(path.join(existingTurbopack, "next.config.ts"), "utf8").includes('resolveAlias: { "@": "./src" }') &&
       !fs.readFileSync(path.join(existingTurbopack, "next.config.ts"), "utf8").includes("stamp-loader"));
   fs.rmSync(existingTurbopack, { recursive: true, force: true });
+}
+
+/* ---- detectPackageManager / installDependencies: real, no re-typing the command
+   just to run `npm install` yourself ---- */
+{
+  const npmProject = fs.mkdtempSync(path.join(os.tmpdir(), "pm-pkgmgr-npm-"));
+  fs.writeFileSync(path.join(npmProject, "package.json"), JSON.stringify({ name: "x", version: "0.0.0" }));
+  check("detectPackageManager: no lockfile at all -> npm (the default)", detectPackageManager(npmProject) === "npm");
+
+  const yarnProject = fs.mkdtempSync(path.join(os.tmpdir(), "pm-pkgmgr-yarn-"));
+  fs.writeFileSync(path.join(yarnProject, "yarn.lock"), "");
+  check("detectPackageManager: yarn.lock present -> yarn", detectPackageManager(yarnProject) === "yarn");
+
+  const pnpmProject = fs.mkdtempSync(path.join(os.tmpdir(), "pm-pkgmgr-pnpm-"));
+  fs.writeFileSync(path.join(pnpmProject, "pnpm-lock.yaml"), "");
+  check("detectPackageManager: pnpm-lock.yaml present -> pnpm", detectPackageManager(pnpmProject) === "pnpm");
+
+  // a real install — no dependencies, so no network needed, but a real spawned
+  // npm process doing real bookkeeping (node_modules/, a lockfile)
+  const install = installDependencies(npmProject);
+  check("installDependencies: a real npm install with zero dependencies succeeds",
+    install.ok === true && install.manager === "npm", JSON.stringify(install));
+
+  const brokenProject = fs.mkdtempSync(path.join(os.tmpdir(), "pm-pkgmgr-broken-"));
+  fs.writeFileSync(path.join(brokenProject, "package.json"), "{ not valid json");
+  const brokenInstall = installDependencies(brokenProject);
+  check("installDependencies: a real failure (invalid package.json) reports ok:false with real stderr, doesn't throw",
+    brokenInstall.ok === false && typeof brokenInstall.error === "string" && brokenInstall.error.length > 0);
+
+  fs.rmSync(npmProject, { recursive: true, force: true });
+  fs.rmSync(yarnProject, { recursive: true, force: true });
+  fs.rmSync(pnpmProject, { recursive: true, force: true });
+  fs.rmSync(brokenProject, { recursive: true, force: true });
+}
+
+/* ---- waitForDevServer: polls a real HTTP server, doesn't ask for a keypress ---- */
+{
+  const http = await import("node:http");
+
+  check("waitForDevServer: already up -> resolves true fast",
+    await (async () => {
+      const srv = http.createServer((_req, res) => res.end("ok"));
+      await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+      const port = srv.address().port;
+      const up = await waitForDevServer(`http://127.0.0.1:${port}/`, { intervalMs: 50, timeoutMs: 2000 });
+      srv.close();
+      return up === true;
+    })());
+
+  check("waitForDevServer: nothing ever listening -> gives up after its own timeout, doesn't hang forever",
+    (await waitForDevServer("http://127.0.0.1:1/", { intervalMs: 30, timeoutMs: 150 })) === false);
+
+  check("waitForDevServer: comes up mid-poll -> detected once it does, not just checked once at the start",
+    await (async () => {
+      const port = 40000 + Math.floor(Math.random() * 10000);
+      let srv = null;
+      setTimeout(() => {
+        srv = http.createServer((_req, res) => res.end("ok"));
+        srv.listen(port, "127.0.0.1");
+      }, 150);
+      const up = await waitForDevServer(`http://127.0.0.1:${port}/`, { intervalMs: 50, timeoutMs: 3000 });
+      if (srv) srv.close();
+      return up === true;
+    })());
 }
 
 /* ---- picker server: every POST overwrites .precedence/plan.json immediately,

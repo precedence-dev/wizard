@@ -11,6 +11,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { spawnSync } from "node:child_process";
 import * as ts from "typescript";
 
 const IMPORT_LINE = 'import { PrecedenceDevtools } from "@precedence/sdk/devtools";';
@@ -286,4 +287,34 @@ export function wireStampLoader(cwd: string): StampWireResult {
   if (!isValidJs(file, out)) return { applied: false, file, reason: "the turbopack.rules edit would have produced invalid syntax — not applying it" };
   fs.writeFileSync(file, out);
   return { applied: true, file };
+}
+
+/**
+ * Runs the install for a new dependency wireDevtools/addDevtoolsDependency
+ * just added — no reason to make the developer type it themselves, the way
+ * `--allow-dirty`'s git check already keeps this safe: nothing uncommitted
+ * for `npm install` to put at risk. Deliberately not a restart of the dev
+ * server itself (see devserver.ts's doc comment) — that's a different kind
+ * of action, on a process this doesn't own.
+ */
+export type PackageManager = "npm" | "yarn" | "pnpm";
+
+export function detectPackageManager(cwd: string): PackageManager {
+  if (fs.existsSync(path.join(cwd, "pnpm-lock.yaml"))) return "pnpm";
+  if (fs.existsSync(path.join(cwd, "yarn.lock"))) return "yarn";
+  return "npm";
+}
+
+export interface InstallResult { ok: boolean; manager: PackageManager; error?: string; }
+
+export function installDependencies(cwd: string): InstallResult {
+  const manager = detectPackageManager(cwd);
+  // Windows package-manager shims (npm.cmd etc.) need cmd.exe to invoke —
+  // same reasoning as openBrowser in pick.ts: wrap via cmd /c rather than
+  // shell:true, so nothing here is re-parsed by a shell.
+  const [cmd, args] = process.platform === "win32" ? ["cmd", ["/c", manager, "install"]] : [manager, ["install"]];
+  const result = spawnSync(cmd, args, { cwd, encoding: "utf8" });
+  if (result.error) return { ok: false, manager, error: result.error.message };
+  if (result.status !== 0) return { ok: false, manager, error: (result.stderr || result.stdout || "").trim().slice(-2000) };
+  return { ok: true, manager };
 }
