@@ -1,8 +1,8 @@
 /**
  * @precedence/wizard invariants: project detection, the in-process scan, the
- * --ci draft-plan scaffold, apply, and the CLI's own arg/diff contract — end to
- * end against a throwaway directory. No VCS involved. The only stub is auth
- * (see README); nothing to test there yet.
+ * --ci scaffold, apply, the local picker receiver (pick), and the CLI's own
+ * arg/diff contract — end to end against throwaway directories. No VCS involved.
+ * The only stub is auth (see README); nothing to test there yet.
  */
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -95,6 +95,7 @@ check("cli: a bogus --emit value is rejected", (() => { try { parseArgs(["--emit
 check("cli: an unknown flag is rejected", (() => { try { parseArgs(["--nope"]); return false; } catch { return true; } })());
 check("cli: the removed --allow-dirty is now an unknown flag", (() => { try { parseArgs(["--allow-dirty"]); return false; } catch { return true; } })());
 check("cli: --track carries its value", parseArgs(["--track", "track from @/lib/analytics"]).track === "track from @/lib/analytics");
+check("cli: --no-serve / -y", parseArgs(["--no-serve"]).serve === false && parseArgs(["-y"]).yes === true && parseArgs([]).serve === true);
 
 /* ---- the published binary actually runs main() (not just when run directly) ---- */
 {
@@ -106,7 +107,8 @@ check("cli: --track carries its value", parseArgs(["--track", "track from @/lib/
     status === 0 && /USAGE/.test(out) && /--track/.test(out), JSON.stringify({ status, out: out.slice(0, 120) }));
 }
 
-/* ---- the wizard runs in a plain directory, no VCS required ---- */
+/* ---- the wizard runs in a plain directory, no VCS required (--no-serve so it
+       bakes the picker and exits instead of waiting on a browser) ---- */
 {
   const plainDir = fs.mkdtempSync(path.join(os.tmpdir(), "pm-nogit-"));
   fs.mkdirSync(path.join(plainDir, "src"));
@@ -114,12 +116,39 @@ check("cli: --track carries its value", parseArgs(["--track", "track from @/lib/
   fs.writeFileSync(path.join(plainDir, "package.json"), JSON.stringify({ dependencies: { react: "^18.0.0" } }));
   const bin = path.resolve(here, "../bin/precedence-wizard.js");
   let out = "", status = 0;
-  try { out = execFileSync("node", [bin, "--no-open"], { cwd: plainDir, encoding: "utf8" }); }
+  try { out = execFileSync("node", [bin, "--no-serve", "--no-open"], { cwd: plainDir, encoding: "utf8" }); }
   catch (e) { out = (e.stdout || "") + (e.stderr || ""); status = e.status ?? 1; }
-  check("cli: a scan in a non-git directory succeeds (exit 0, catalog written)",
-    status === 0 && /attach point/.test(out) && fs.existsSync(path.join(plainDir, ".precedence", "catalog.pcs")),
+  check("cli: a scan in a non-git directory succeeds (exit 0, catalog + baked picker written)",
+    status === 0 && /attach point/.test(out)
+      && fs.existsSync(path.join(plainDir, ".precedence", "catalog.pcs"))
+      && fs.existsSync(path.join(plainDir, ".precedence", "viewer.html")),
     JSON.stringify({ status, out: out.slice(0, 160) }));
-  fs.rmSync(plainDir, { recursive: true, force: true });
+  fs.rmSync(plainDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
+
+/* ---- pick(): serves the picker and writes what the browser POSTs back ---- */
+{
+  const { pick } = await import(dist("pick.js"));
+  const pickDir = fs.mkdtempSync(path.join(os.tmpdir(), "pm-pick-"));
+  fs.mkdirSync(path.join(pickDir, ".precedence"));
+  const cat = { tool: "precedence", elements: [], attachPoints: 0 };
+
+  // capture the served URL from stdout, then POST a plan as the browser would
+  const realWrite = process.stdout.write.bind(process.stdout);
+  let sniffed = "";
+  process.stdout.write = (s, ...a) => { sniffed += s; return realWrite(s, ...a); };
+  const pending = pick(pickDir, cat, { open: false });
+  await new Promise((r) => setTimeout(r, 80));
+  process.stdout.write = realWrite;
+
+  const url = (sniffed.match(/http:\/\/127\.0\.0\.1:\d+\//) || [])[0];
+  const sent = { tool: "precedence-viewer", events: [{ name: "e1", properties: [], anchors: [] }] };
+  await fetch(url + "plan", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sent) });
+  const res = await pending;
+  check("pick: resolves with the posted plan and writes it to .precedence/plan.json",
+    res.plan.events.length === 1
+      && JSON.parse(fs.readFileSync(path.join(pickDir, ".precedence", "plan.json"), "utf8")).events[0].name === "e1");
+  fs.rmSync(pickDir, { recursive: true, force: true });
 }
 
 /* ---- previewDiff: the review surface ---- */

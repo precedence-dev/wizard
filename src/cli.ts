@@ -19,10 +19,11 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { spawnSync } from "node:child_process";
+import * as readline from "node:readline";
 import { detectProject } from "./detect";
 import { scan, writeCatalog } from "./scan";
 import { readPlan, writeDraftPlan, planPath } from "./plan";
+import { pick, bakePicker } from "./pick";
 import { apply, preview } from "./apply";
 import type { Plan } from "@precedence/instrument";
 
@@ -33,23 +34,28 @@ const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
 
 interface Opts {
   apply: boolean;
+  yes: boolean;
   track?: string;
   emit: "direct" | "runtime";
   runtime?: string;
   types: boolean;
   ci: boolean;
+  serve: boolean;
   open: boolean;
   help: boolean;
 }
 
 function parseArgs(argv: string[]): Opts {
-  const o: Opts = { apply: false, emit: "direct", types: false, ci: false, open: true, help: false };
+  const o: Opts = { apply: false, yes: false, emit: "direct", types: false, ci: false, serve: true, open: true, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "-h" || a === "--help") o.help = true;
     else if (a === "--apply") o.apply = true;
+    else if (a === "-y" || a === "--yes") o.yes = true;
     else if (a === "--types") o.types = true;
     else if (a === "--ci") o.ci = true;
+    else if (a === "--serve") o.serve = true;
+    else if (a === "--no-serve") o.serve = false;
     else if (a === "--open") o.open = true;
     else if (a === "--no-open") o.open = false;
     else if (a === "--track") {
@@ -65,38 +71,30 @@ function parseArgs(argv: string[]): Opts {
   return o;
 }
 
-const HELP = `precedence-wizard: scan a repo, pick outcomes, instrument them
+const HELP = `precedence-wizard: scan a project, pick outcomes, instrument them
 
 USAGE
-  npx @precedence/wizard                         scan and open the browser picker
   npx @precedence/wizard --track "track from @/lib/analytics"
-                                                   preview the generated source diff
+      scan, open the picker, and print the diff when you send it back
   npx @precedence/wizard --track "track from @/lib/analytics" --apply
-                                                   apply the reviewed diff
+      ...and write it (asks first when run interactively)
 
 OPTIONS
   --track <spec>    required for direct mode; e.g. "track from @/lib/analytics"
   --emit <mode>     direct (default) or runtime
   --runtime <file>  direct mode: write delegated-link listener here on --apply
-  --apply           write source only after the preview has been reviewed
+  --apply           write source after the preview
+  -y, --yes         skip the "apply?" confirmation
   --types           resolve declared types (slower, enables interprocedural outcomes)
   --ci              non-interactive: write a draft plan.json instead of the pick step
-  --no-open         scan but do not launch the browser picker
+  --no-serve        bake a static picker to export by hand instead of serving it
+  --no-open         don't launch a browser
   -h, --help
 `;
 
-/** Open the catalog in @precedence/viewer; print the manual command if we can't. */
-function launchViewer(catalog: string): void {
-  try {
-    const entry = require.resolve("@precedence/viewer");
-    const bin = path.resolve(path.dirname(entry), "..", "bin", "precedence-view.js");
-    const r = spawnSync(process.execPath, [bin, catalog, "--open"], { stdio: "inherit" });
-    if (!r.error && r.status === 0) return;
-  } catch {
-    // The command below is a usable fallback in remote terminals and CI.
-  }
-  console.log(yellow("\n  couldn't launch the viewer automatically."));
-  console.log(`  run ${cyan(`npx @precedence/viewer ${catalog} --open`)}`);
+function confirm(question: string): Promise<boolean> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => rl.question(question, (a) => { rl.close(); resolve(/^y(es)?$/i.test(a.trim())); }));
 }
 
 /** A unified-ish diff for the preview: LCS over lines so an inserted import and
@@ -157,7 +155,7 @@ function condense(ops: Array<[" " | "-" | "+", string]>, ctx = 3): string[] {
   return out.length ? out : ["@@", " (no textual change)"];
 }
 
-function main(): void {
+async function main(): Promise<void> {
   let opts: Opts;
   try { opts = parseArgs(process.argv.slice(2)); }
   catch (e) { console.error(`error: ${e instanceof Error ? e.message : e}\n\n${HELP}`); process.exitCode = 2; return; }
@@ -167,7 +165,8 @@ function main(): void {
   console.log(bold("\nprecedence-wizard\n"));
 
   const project = detectProject(cwd);
-  const plan = readPlan(cwd) as Plan | null;
+  let plan = readPlan(cwd) as Plan | null;
+
   if (!plan) {
     console.log(`  framework: ${project.framework === "unknown" ? dim("not detected (scanning anyway)") : project.framework}`);
     console.log(`  scanning: ${project.srcDirs.join(", ")}`);
@@ -178,21 +177,29 @@ function main(): void {
     if (!catalog.attachPoints) { console.log(yellow("\n  nothing trackable found — nothing to pick.")); return; }
     if (opts.ci) {
       const draft = writeDraftPlan(cwd, catalog);
-      console.log(`\n  wrote draft ${cyan(draft)} — edit it, then preview with --track.`);
+      console.log(`\n  wrote draft ${cyan(draft)} — edit it, then re-run with --track.`);
       return;
     }
-    console.log(bold("\n  browser picker: define the shared event vocabulary"));
-    console.log("  Growth/marketing: select outcomes, name them, define what each means, and choose properties.");
-    console.log(`  Export the plan to ${cyan(planPath(cwd))} and keep it in the repo for engineering review.`);
-    if (opts.open) launchViewer(catalogFile);
-    return;
+    if (!opts.serve) {
+      const html = bakePicker(cwd, catalog, { open: opts.open });
+      console.log(`\n  picker baked: ${cyan(html)}`);
+      console.log(`  pick outcomes, export to ${cyan(planPath(cwd))}, then re-run.`);
+      return;
+    }
+    console.log("");
+    const picked = await pick(cwd, catalog, { open: opts.open });
+    const n = Array.isArray(picked.plan.events) ? picked.plan.events.length : 0;
+    if (!n) { console.log(yellow("\n  nothing sent from the picker — no events to instrument.")); return; }
+    console.log(`  received ${bold(String(n))} event(s) → ${cyan(picked.path)}`);
+    plan = picked.plan as Plan;
+  } else {
+    const events = Array.isArray(plan.events) ? plan.events.length : 0;
+    console.log(`  plan: ${cyan(planPath(cwd))} — ${events} event(s)`);
   }
 
-  const events = Array.isArray(plan.events) ? plan.events.length : 0;
-  console.log(`  plan: ${cyan(planPath(cwd))} — ${events} event(s)`);
   if (opts.emit === "direct" && !opts.track) {
-    console.log(yellow("\n  next: preview the source diff this plan produces."));
-    console.log(`  ${cyan('npx @precedence/wizard --track "track from @/lib/analytics"')}`);
+    console.log(yellow("\n  next: preview the diff this plan produces."));
+    console.log(`  ${cyan('npx @precedence/wizard --track "track from @/lib/analytics" --apply')}`);
     console.log(dim("  (--track names the import for the generated calls; --emit runtime skips it)"));
     process.exitCode = 2;
     return;
@@ -200,12 +207,17 @@ function main(): void {
   const instrumentOpts = { track: opts.track, emit: opts.emit, types: opts.types } as const;
   const proposed = preview(cwd, project, plan, instrumentOpts);
   const changed = proposed.files.filter((f) => f.before !== f.after);
-  console.log(bold("\n  proposed instrumentation (nothing written):"));
+  console.log(bold("\n  proposed instrumentation (nothing written yet):"));
   proposed.warnings.forEach((w) => console.log(yellow(`  ! ${w.detail}`)));
   proposed.skipped.forEach((s) => console.log(yellow(`  - ${s.id || s.event}: ${s.reason}`)));
   changed.forEach((f) => console.log("\n" + previewDiff(f.file, f.before, f.after)));
   if (proposed.runtimeModule) console.log(dim("\n  Links/bare buttons need a generated listener: pass --runtime src/pm-tracking.ts when applying."));
-  if (!opts.apply) { console.log(`\n  review the diff, then rerun with ${cyan("--apply")}.`); return; }
+  if (!changed.length) { console.log("\n  nothing to apply."); return; }
+  if (!opts.apply) { console.log(`\n  reviewed? re-run with ${cyan("--apply")}.`); return; }
+  if (!opts.yes && process.stdin.isTTY) {
+    const ok = await confirm(`\n  apply ${changed.length} file change(s)? [y/N] `);
+    if (!ok) { console.log("  nothing written."); return; }
+  }
 
   const result = apply(cwd, project, plan, instrumentOpts);
   if (opts.runtime && result.runtimeModule) {
@@ -233,5 +245,5 @@ function main(): void {
   if (opts.emit === "runtime") console.log(dim("\n  Runtime mode also needs installPrecedence({ track, planUrl }) at your app root and the committed plan deployed to that URL."));
 }
 
-if (require.main === module) main();
+if (require.main === module) void main();
 export { main, parseArgs, previewDiff };
