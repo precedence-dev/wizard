@@ -8,6 +8,8 @@ import * as path from "node:path";
 export interface ProjectInfo {
   framework: "next" | "react" | "unknown";
   srcDirs: string[];
+  /** best guess at the local dev server URL, for the live picker */
+  devUrl: string;
 }
 
 function readPackageJson(cwd: string): Record<string, unknown> | null {
@@ -26,7 +28,20 @@ export function detectProject(cwd: string): ProjectInfo {
   const candidates = ["src", "app", "pages", "components"];
   const srcDirs = candidates.filter((d) => fs.existsSync(path.join(cwd, d)) && fs.statSync(path.join(cwd, d)).isDirectory());
 
-  return { framework, srcDirs: srcDirs.length ? srcDirs : ["."] };
+  return { framework, srcDirs: srcDirs.length ? srcDirs : ["."], devUrl: detectDevUrl(pkg, deps) };
+}
+
+/** The dev-server URL: a `--port`/`-p`/`PORT=` in the dev script wins, else the
+ *  framework's default. `--app <url>` overrides this entirely. */
+function detectDevUrl(pkg: Record<string, unknown> | null, deps: Record<string, string>): string {
+  const scripts = (pkg?.scripts as Record<string, string>) || {};
+  const cmd = scripts.dev || scripts.start || "";
+  const m = cmd.match(/(?:--port[= ]|-p[= ]|PORT=)(\d{2,5})/);
+  const port = m ? m[1]
+    : /vite/.test(cmd) || deps.vite ? "5173"
+    : /astro/.test(cmd) || deps.astro ? "4321"
+    : "3000";
+  return `http://localhost:${port}`;
 }
 
 const EXT = /\.(tsx|jsx|ts|js|mts|cts|mjs|cjs)$/;

@@ -11,21 +11,26 @@ required.
 ## The flow
 
 ```sh
+# one time: install @precedence/sdk and call installPrecedence({ track }) at your
+# app root, and wire @precedence/cli/stamp-loader into your bundler for dev
+# (the wizard prints the snippet). Then:
+
 npx @precedence/wizard --track "track from @/lib/analytics" --apply
 ```
 
 1. **Scan** — writes `.precedence/catalog.pcs`.
-2. **Pick** — opens the picker in your browser (served on `127.0.0.1`). Select
-   outcomes, name them, write what each one means, choose properties, then click
-   **send to wizard**. The plan comes straight back — no file to move.
+2. **Pick** — opens your **running app** at `?precedence=pick`. `@precedence/sdk`
+   loads the picker overlay; you hover and click real elements, name the outcomes
+   to track, then **send to wizard**. The plan comes straight back.
 3. **Preview** — the exact source diff is printed.
 4. **Apply** — with `--apply`, it writes; run interactively, it asks first. The
-   instrumentation is now a diff you can review and commit on its own.
+   instrumentation is a diff you review and commit on its own.
 
-Drop `--apply` to stop after the preview and re-run when you're ready. The plan
-is saved to `.precedence/plan.json` either way — keep it in the repo, it's the
-source of truth for the events. Re-running with a plan already present skips
-straight to preview.
+The wizard guesses your dev URL from `package.json` (`--app <url>` to override).
+Drop `--apply` to stop after the preview. The plan is saved to
+`.precedence/plan.json` — keep it in the repo, it's the source of truth for the
+events. A plan already present skips straight to preview. `--no-serve` falls back
+to the static picker (browse a tree, export a file by hand).
 
 ## Why a browser step
 
@@ -45,6 +50,7 @@ in the repo as the answer to "what does this event mean".
 | `--runtime <file>` | direct mode: write the delegated-link listener here on `--apply` |
 | `--apply` | write source after the preview |
 | `-y`, `--yes` | skip the "apply?" confirmation |
+| `--app <url>` | your running dev server (default: guessed from `package.json`) |
 | `--types` | resolve declared types (slower; enables interprocedural outcomes) |
 | `--ci` | non-interactive: scaffold a draft `plan.json` instead of the pick step |
 | `--no-serve` | bake a static picker to `.precedence/viewer.html` and export a file by hand |
@@ -66,7 +72,7 @@ src/
 ├── cli.ts     orchestration: scan → pick → preview → apply
 ├── detect.ts  framework + source-dir detection, file collection
 ├── scan.ts    wraps @precedence/cli's buildCatalog; writes .precedence/catalog.pcs
-├── pick.ts    serves @precedence/viewer, writes the plan the browser sends back
+├── pick.ts    serves @precedence/viewer, opens your app at ?precedence=pick, writes the plan sent back
 ├── plan.ts    reads plan.json, or scaffolds a draft (--ci) from the catalog
 └── apply.ts   wraps @precedence/instrument's instrument() — preview() and apply()
 ```

@@ -48,6 +48,14 @@ fs.writeFileSync(path.join(tmp, "package.json"), JSON.stringify({ dependencies: 
 const project = detectProject(tmp);
 check("detect: package.json with a react dependency -> framework: react", project.framework === "react");
 check("detect: an existing src/ dir is used, not the project root", project.srcDirs.includes("src") && !project.srcDirs.includes("."));
+check("detect: devUrl defaults to :3000", project.devUrl === "http://localhost:3000");
+check("detect: devUrl honours a --port in the dev script", (() => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "pm-port-"));
+  fs.writeFileSync(path.join(d, "package.json"), JSON.stringify({ dependencies: { next: "15" }, scripts: { dev: "next dev -p 4300" } }));
+  const r = detectProject(d).devUrl;
+  fs.rmSync(d, { recursive: true, force: true });
+  return r === "http://localhost:4300";
+})());
 const files = collectFiles(path.join(tmp, "src"));
 check("detect: finds the .tsx fixture", files.length === 1 && files[0].endsWith("Checkout.tsx"));
 
@@ -95,7 +103,8 @@ check("cli: a bogus --emit value is rejected", (() => { try { parseArgs(["--emit
 check("cli: an unknown flag is rejected", (() => { try { parseArgs(["--nope"]); return false; } catch { return true; } })());
 check("cli: the removed --allow-dirty is now an unknown flag", (() => { try { parseArgs(["--allow-dirty"]); return false; } catch { return true; } })());
 check("cli: --track carries its value", parseArgs(["--track", "track from @/lib/analytics"]).track === "track from @/lib/analytics");
-check("cli: --no-serve / -y", parseArgs(["--no-serve"]).serve === false && parseArgs(["-y"]).yes === true && parseArgs([]).serve === true);
+check("cli: --no-serve / -y / --app", parseArgs(["--no-serve"]).serve === false && parseArgs(["-y"]).yes === true
+  && parseArgs([]).serve === true && parseArgs(["--app", "http://localhost:4000"]).app === "http://localhost:4000");
 
 /* ---- the published binary actually runs main() (not just when run directly) ---- */
 {
@@ -133,16 +142,17 @@ check("cli: --no-serve / -y", parseArgs(["--no-serve"]).serve === false && parse
   fs.mkdirSync(path.join(pickDir, ".precedence"));
   const cat = { tool: "precedence", elements: [], attachPoints: 0 };
 
-  // capture the served URL from stdout, then POST a plan as the browser would
+  // capture stdout, then POST a plan the way the in-page agent would
   const realWrite = process.stdout.write.bind(process.stdout);
   let sniffed = "";
   process.stdout.write = (s, ...a) => { sniffed += s; return realWrite(s, ...a); };
-  const pending = pick(pickDir, cat, { open: false });
+  const pending = pick(pickDir, cat, { devUrl: "http://localhost:3000", open: false });
   await new Promise((r) => setTimeout(r, 80));
   process.stdout.write = realWrite;
 
-  const url = (sniffed.match(/http:\/\/127\.0\.0\.1:\d+\//) || [])[0];
-  const sent = { tool: "precedence-viewer", events: [{ name: "e1", properties: [], anchors: [] }] };
+  check("pick: opens the app at ?precedence=pick&at=<server>", /localhost:3000\/\?precedence=pick&at=http%3A%2F%2F127\.0\.0\.1%3A\d+/.test(sniffed));
+  const url = (sniffed.match(/picker server: (http:\/\/127\.0\.0\.1:\d+)/) || [])[1] + "/";
+  const sent = { tool: "precedence-agent", events: [{ name: "e1", properties: [], anchors: [] }] };
   await fetch(url + "plan", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sent) });
   const res = await pending;
   check("pick: resolves with the posted plan and writes it to .precedence/plan.json",

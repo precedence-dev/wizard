@@ -42,6 +42,7 @@ interface Opts {
   ci: boolean;
   serve: boolean;
   open: boolean;
+  app?: string;
   help: boolean;
 }
 
@@ -58,7 +59,9 @@ function parseArgs(argv: string[]): Opts {
     else if (a === "--no-serve") o.serve = false;
     else if (a === "--open") o.open = true;
     else if (a === "--no-open") o.open = false;
-    else if (a === "--track") {
+    else if (a === "--app") {
+      const v = argv[++i]; if (!v) throw new Error("missing value for --app"); o.app = v;
+    } else if (a === "--track") {
       const v = argv[++i]; if (!v) throw new Error("missing value for --track"); o.track = v;
     } else if (a === "--runtime") {
       const v = argv[++i]; if (!v) throw new Error("missing value for --runtime"); o.runtime = v;
@@ -86,11 +89,31 @@ OPTIONS
   --apply           write source after the preview
   -y, --yes         skip the "apply?" confirmation
   --types           resolve declared types (slower, enables interprocedural outcomes)
+  --app <url>        your running dev server (default: guessed from package.json)
   --ci              non-interactive: write a draft plan.json instead of the pick step
   --no-serve        bake a static picker to export by hand instead of serving it
   --no-open         don't launch a browser
   -h, --help
 `;
+
+/** the one-time bundler wiring that makes clicks resolve exactly */
+function stampLoaderHint(framework: string): string {
+  const rule = `{ test: /\\.(jsx|tsx)$/, exclude: /node_modules/, use: "@precedence/cli/stamp-loader" }`;
+  if (framework === "next") {
+    return [
+      "  the picker needs the stamp loader wired in (one time). In next.config.js:",
+      "",
+      "    webpack(config, { dev }) {",
+      `      if (dev) config.module.rules.push(${rule});`,
+      "      return config;",
+      "    },",
+      "",
+      "  Turbopack instead:  turbopack: { rules: { \"*.{jsx,tsx}\": { loaders: [\"@precedence/cli/stamp-loader\"] } } }",
+      "  then restart your dev server.",
+    ].join("\n");
+  }
+  return `  wire @precedence/cli/stamp-loader into your bundler for */.jsx,tsx (dev only), then restart.`;
+}
 
 function confirm(question: string): Promise<boolean> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -186,8 +209,12 @@ async function main(): Promise<void> {
       console.log(`  pick outcomes, export to ${cyan(planPath(cwd))}, then re-run.`);
       return;
     }
+    const devUrl = opts.app || project.devUrl;
     console.log("");
-    const picked = await pick(cwd, catalog, { open: opts.open });
+    console.log(stampLoaderHint(project.framework));
+    console.log(dim(`\n  app: ${devUrl}  (start it if it isn't running; --app <url> to change)`));
+    console.log("");
+    const picked = await pick(cwd, catalog, { devUrl, open: opts.open });
     const n = Array.isArray(picked.plan.events) ? picked.plan.events.length : 0;
     if (!n) { console.log(yellow("\n  nothing sent from the picker — no events to instrument.")); return; }
     console.log(`  received ${bold(String(n))} event(s) → ${cyan(picked.path)}`);
