@@ -58,14 +58,12 @@ in the repo as the answer to "what does this event mean".
 | `--no-serve` | bake a static picker to `.precedence/viewer.html` and export a file by hand |
 | `--no-open` | don't launch a browser |
 
-## One honest gap
+## Not published yet
 
-**No account/registry backend yet.** The intended flow is: authenticate, then
-fetch `@precedence/cli` from a gated registry so the scan still runs entirely on
-your machine. Until that exists, this repo depends on `@precedence/cli` (and
-`@precedence/instrument`, `@precedence/viewer`) as local `file:` siblings — the
-same stand-in `@precedence/instrument` uses; see that package's README. Marked
-in `src/cli.ts` at the point it'll be replaced.
+Until the packages ship to npm, this repo depends on `@precedence/cli`,
+`@precedence/instrument`, and `@precedence/viewer` as local `file:` siblings.
+All five packages are Apache-2.0; on publish these become normal semver deps and
+`npx @precedence/wizard` just works.
 
 ## Structure
 

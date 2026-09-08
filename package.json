@@ -2,7 +2,7 @@
   "name": "@precedence/wizard",
   "version": "0.1.0",
   "description": "Interactive setup: scan a repo, pick outcomes, instrument them. The one-command path into Precedence.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "bin": {
     "precedence-wizard": "bin/precedence-wizard.js"
   },

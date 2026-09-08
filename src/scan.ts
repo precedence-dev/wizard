@@ -2,10 +2,8 @@
  * Runs the real analyzer, in-process, against the files this project detected.
  *
  * Calls @precedence/cli directly rather than shelling out to `precedence` —
- * same as @precedence/instrument does, one code path, no stdout-parsing. Today
- * @precedence/cli is a `file:` sibling (see README); once there's an
- * auth-gated registry, the install happens here, before the require — not a
- * different code path.
+ * same as @precedence/instrument does, one code path, no stdout-parsing.
+ * (@precedence/cli is a `file:` sibling until the packages are published.)
  */
 import * as fs from "node:fs";
 import * as path from "node:path";

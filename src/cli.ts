@@ -14,8 +14,8 @@
  * viewer, applying is @precedence/instrument. --apply is a separate step from
  * the preview, so it's on you to have committed first if you want that.
  *
- * One genuine stand-in: there's no account/registry backend yet, so
- * @precedence/cli is a local `file:` sibling (see README).
+ * Until the packages are on npm, @precedence/cli / instrument / viewer are local
+ * `file:` siblings (see README). All Apache-2.0.
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
