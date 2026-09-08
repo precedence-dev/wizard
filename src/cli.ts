@@ -24,6 +24,7 @@ import { detectProject } from "./detect";
 import { scan, writeCatalog } from "./scan";
 import { readPlan, writeDraftPlan, planPath } from "./plan";
 import { pick, bakePicker } from "./pick";
+import * as wire from "./wire";
 import { apply, preview } from "./apply";
 import type { Plan } from "@precedence/instrument";
 
@@ -96,23 +97,13 @@ OPTIONS
   -h, --help
 `;
 
-/** the one-time bundler wiring that makes clicks resolve exactly */
-function stampLoaderHint(framework: string): string {
-  const rule = `{ test: /\\.(jsx|tsx)$/, exclude: /node_modules/, use: "@precedence/cli/stamp-loader" }`;
-  if (framework === "next") {
-    return [
-      "  the picker needs the stamp loader wired in (one time). In next.config.js:",
-      "",
-      "    webpack(config, { dev }) {",
-      `      if (dev) config.module.rules.push(${rule});`,
-      "      return config;",
-      "    },",
-      "",
-      "  Turbopack instead:  turbopack: { rules: { \"*.{jsx,tsx}\": { loaders: [\"@precedence/cli/stamp-loader\"] } } }",
-      "  then restart your dev server.",
-    ].join("\n");
-  }
-  return `  wire @precedence/cli/stamp-loader into your bundler for */.jsx,tsx (dev only), then restart.`;
+/** non-Next: the picker's one-time bundler wiring (Next goes through wire.ts) */
+function stampLoaderHint(_framework: string): string {
+  return [
+    "  the picker resolves clicks via @precedence/cli/stamp-loader — wire it into",
+    "  your bundler for *.jsx/*.tsx (dev only) and load precedencePicker() from",
+    "  @precedence/sdk at startup, then restart.",
+  ].join("\n");
 }
 
 function confirm(question: string): Promise<boolean> {
@@ -211,8 +202,32 @@ async function main(): Promise<void> {
     }
     const devUrl = opts.app || project.devUrl;
     console.log("");
-    console.log(stampLoaderHint(project.framework));
-    console.log(dim(`\n  app: ${devUrl}  (start it if it isn't running; --app <url> to change)`));
+
+    if (project.framework === "next") {
+      if (!wire.hasSdk(cwd)) {
+        console.log(yellow("  install @precedence/sdk and @precedence/cli, then re-run:"));
+        console.log(`    ${cyan("npm i @precedence/sdk @precedence/cli")}`);
+        return;
+      }
+      const ic = wire.instrumentationClient(cwd);
+      console.log(ic.status === "created" ? `  wrote ${cyan(ic.file)} (loads the picker in dev)`
+        : ic.status === "present" ? `  ${dim(ic.file + " already loads the picker")}`
+        : yellow(`  ${ic.file} exists — add a \`precedencePicker()\` call to it`));
+      const nc = wire.nextConfig(cwd);
+      if (!nc.wired) {
+        console.log("");
+        console.log(wire.wrapHint(nc.file));
+        console.log(dim("\n  ...then restart your dev server (Next reads next.config once)."));
+      }
+    } else {
+      console.log(stampLoaderHint(project.framework));
+    }
+
+    console.log(dim(`\n  waiting for your app at ${devUrl} ...`));
+    if (!(await wire.waitForServer(devUrl))) {
+      console.log(yellow(`  not reachable — start your dev server and re-run (or --app <url>).`));
+      return;
+    }
     console.log("");
     const picked = await pick(cwd, catalog, { devUrl, open: opts.open });
     const n = Array.isArray(picked.plan.events) ? picked.plan.events.length : 0;

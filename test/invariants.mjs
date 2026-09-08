@@ -161,6 +161,37 @@ check("cli: --no-serve / -y / --app", parseArgs(["--no-serve"]).serve === false 
   fs.rmSync(pickDir, { recursive: true, force: true });
 }
 
+/* ---- wire: one-time Next setup, without touching layout.tsx ---- */
+{
+  const wire = await import(dist("wire.js"));
+  const w = fs.mkdtempSync(path.join(os.tmpdir(), "pm-wire-"));
+
+  const ic = wire.instrumentationClient(w);
+  check("wire: writes instrumentation-client.ts that calls precedencePicker() (no layout edit)",
+    ic.status === "created" && ic.file === "instrumentation-client.ts"
+      && fs.readFileSync(path.join(w, "instrumentation-client.ts"), "utf8").includes("precedencePicker()"));
+  check("wire: re-running detects the existing file, doesn't overwrite", wire.instrumentationClient(w).status === "present");
+
+  check("wire: nextConfig — none present", wire.nextConfig(w).file === null);
+  fs.writeFileSync(path.join(w, "next.config.mjs"), "const nextConfig = {};\nexport default nextConfig;\n");
+  check("wire: nextConfig — found but not wrapped", (() => { const n = wire.nextConfig(w); return n.file === "next.config.mjs" && n.wired === false; })());
+  fs.writeFileSync(path.join(w, "next.config.mjs"), "import { withPrecedence } from '@precedence/cli/next';\nexport default withPrecedence({});\n");
+  check("wire: nextConfig — recognises withPrecedence", wire.nextConfig(w).wired === true);
+
+  check("wire: wrapHint is one line, ESM for .mjs / CJS for .js",
+    /export default withPrecedence/.test(wire.wrapHint("next.config.mjs")) && /module\.exports = withPrecedence/.test(wire.wrapHint("next.config.js")));
+
+  fs.rmSync(w, { recursive: true, force: true });
+
+  const http = await import("node:http");
+  const srv = http.createServer((_q, r) => r.end("ok"));
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const port = srv.address().port;
+  check("wire: waitForServer resolves true when the URL is up", (await wire.waitForServer(`http://127.0.0.1:${port}/`, 2000)) === true);
+  srv.close();
+  check("wire: waitForServer resolves false on timeout", (await wire.waitForServer("http://127.0.0.1:1/", 300)) === false);
+}
+
 /* ---- previewDiff: the review surface ---- */
 {
   const before = ["function onSubmit() {", "  if (!user) return;", "  charge();", "}"].join("\n");
