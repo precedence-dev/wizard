@@ -8,11 +8,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
 
-const IC_BODY = `import { precedencePicker } from "@precedence/sdk";\n\n// dev-only: loads the Precedence picker when opened with ?precedence=pick\nprecedencePicker();\n`;
+const IC_BODY = `import { precedencePicker } from "@precedence-dev/sdk";\n\n// dev-only: loads the Precedence picker when opened with ?precedence=pick\nprecedencePicker();\n`;
 
-/** can `@precedence/sdk` be resolved from the target project? */
+/** can `@precedence-dev/sdk` be resolved from the target project? */
 export function hasSdk(cwd: string): boolean {
-  try { createRequire(path.join(cwd, "package.json")).resolve("@precedence/sdk"); return true; }
+  try { createRequire(path.join(cwd, "package.json")).resolve("@precedence-dev/sdk"); return true; }
   catch { return false; }
 }
 
@@ -46,8 +46,8 @@ export function wrapHint(file: string | null): string {
     `  wrap ${f} with withPrecedence (one time):`,
     "",
     esm
-      ? `    import { withPrecedence } from "@precedence/cli/next";`
-      : `    const { withPrecedence } = require("@precedence/cli/next");`,
+      ? `    import { withPrecedence } from "@precedence-dev/cli/next";`
+      : `    const { withPrecedence } = require("@precedence-dev/cli/next");`,
     esm
       ? `    export default withPrecedence(nextConfig);   // was: export default nextConfig`
       : `    module.exports = withPrecedence(nextConfig);  // was: module.exports = nextConfig`,

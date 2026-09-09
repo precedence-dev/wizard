@@ -1,8 +1,17 @@
 {
-  "name": "@precedence/wizard",
+  "name": "@precedence-dev/wizard",
   "version": "0.1.0",
   "description": "Interactive setup: scan a repo, pick outcomes, instrument them. The one-command path into Precedence.",
-  "license": "Apache-2.0",
+  "license": "FSL-1.1-ALv2",
+  "author": "Precedence",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/precedence-dev/wizard.git"
+  },
+  "homepage": "https://github.com/precedence-dev/wizard",
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "precedence-wizard": "bin/precedence-wizard.js"
   },
@@ -18,9 +27,9 @@
     "test": "npm run build && node test/invariants.mjs"
   },
   "dependencies": {
-    "@precedence/cli": "file:../core/packages/cli",
-    "@precedence/instrument": "file:../instrument",
-    "@precedence/viewer": "file:../sdk/packages/viewer"
+    "@precedence-dev/cli": "^0.1.0",
+    "@precedence-dev/instrument": "^0.1.0",
+    "@precedence-dev/viewer": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

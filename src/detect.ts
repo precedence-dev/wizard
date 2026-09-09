@@ -48,7 +48,7 @@ const EXT = /\.(tsx|jsx|ts|js|mts|cts|mjs|cjs)$/;
 const SKIP_DIR = new Set(["node_modules", ".git", ".next", "dist", "build", ".precedence"]);
 
 /** Recursively collect .tsx/.jsx/.ts files under a directory. No git/--changed-since
- *  logic here on purpose — that's @precedence/cli's own discover.ts; this just needs
+ *  logic here on purpose — that's @precedence-dev/cli's own discover.ts; this just needs
  *  "everything under the detected source dirs" for a first-run scan. */
 export function collectFiles(dir: string, out: string[] = []): string[] {
   let entries: fs.Dirent[];

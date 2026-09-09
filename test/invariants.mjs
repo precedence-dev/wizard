@@ -1,5 +1,5 @@
 /**
- * @precedence/wizard invariants: project detection, the in-process scan, the
+ * @precedence-dev/wizard invariants: project detection, the in-process scan, the
  * --ci scaffold, apply, the local picker receiver (pick), and the CLI's own
  * arg/diff contract — end to end against throwaway directories. No VCS involved.
  * The only stub is auth (see README); nothing to test there yet.
@@ -175,7 +175,7 @@ check("cli: --no-serve / -y / --app", parseArgs(["--no-serve"]).serve === false 
   check("wire: nextConfig — none present", wire.nextConfig(w).file === null);
   fs.writeFileSync(path.join(w, "next.config.mjs"), "const nextConfig = {};\nexport default nextConfig;\n");
   check("wire: nextConfig — found but not wrapped", (() => { const n = wire.nextConfig(w); return n.file === "next.config.mjs" && n.wired === false; })());
-  fs.writeFileSync(path.join(w, "next.config.mjs"), "import { withPrecedence } from '@precedence/cli/next';\nexport default withPrecedence({});\n");
+  fs.writeFileSync(path.join(w, "next.config.mjs"), "import { withPrecedence } from '@precedence-dev/cli/next';\nexport default withPrecedence({});\n");
   check("wire: nextConfig — recognises withPrecedence", wire.nextConfig(w).wired === true);
 
   check("wire: wrapHint is one line, ESM for .mjs / CJS for .js",

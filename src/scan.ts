@@ -1,14 +1,13 @@
 /**
  * Runs the real analyzer, in-process, against the files this project detected.
  *
- * Calls @precedence/cli directly rather than shelling out to `precedence` —
- * same as @precedence/instrument does, one code path, no stdout-parsing.
- * (@precedence/cli is a `file:` sibling until the packages are published.)
+ * Calls @precedence-dev/cli directly rather than shelling out to `precedence` —
+ * same as @precedence-dev/instrument does, one code path, no stdout-parsing.
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { buildCatalog } from "@precedence/cli/build";
-import type { Catalog } from "@precedence/cli";
+import { buildCatalog } from "@precedence-dev/cli/build";
+import type { Catalog } from "@precedence-dev/cli";
 import { collectFiles, ProjectInfo } from "./detect";
 import { catalogPath } from "./plan";
 

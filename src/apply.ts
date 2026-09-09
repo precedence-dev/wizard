@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { instrument, Plan, type InstrumentResult } from "@precedence/instrument";
+import { instrument, Plan, type InstrumentResult } from "@precedence-dev/instrument";
 import { collectFiles, ProjectInfo } from "./detect";
 
 export interface ApplyResult {

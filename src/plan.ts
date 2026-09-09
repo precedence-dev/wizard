@@ -7,7 +7,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { Catalog, OutcomeBranch } from "@precedence/cli";
+import type { Catalog, OutcomeBranch } from "@precedence-dev/cli";
 
 export interface DraftAnchor {
   id: string;

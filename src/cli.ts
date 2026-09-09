@@ -2,20 +2,20 @@
 /**
  * `precedence-wizard`: scan a project, open the picker, preview, then apply.
  *
- *   npx @precedence/wizard                    # scan -> open @precedence/viewer
+ *   npx @precedence-dev/wizard                    # scan -> open @precedence-dev/viewer
  *   # ...pick outcomes, save .precedence/plan.json...
- *   npx @precedence/wizard --track "<spec>"           # preview the source diff
- *   npx @precedence/wizard --track "<spec>" --apply   # write it
+ *   npx @precedence-dev/wizard --track "<spec>"           # preview the source diff
+ *   npx @precedence-dev/wizard --track "<spec>" --apply   # write it
  *
- *   npx @precedence/wizard --ci     # scan -> scaffold a draft plan.json to hand-edit
+ *   npx @precedence-dev/wizard --ci     # scan -> scaffold a draft plan.json to hand-edit
  *
  * Framework-agnostic and VCS-agnostic: it reads and writes plain files, the
  * scan runs the real analyzer in-process, picking happens in the standalone
- * viewer, applying is @precedence/instrument. --apply is a separate step from
+ * viewer, applying is @precedence-dev/instrument. --apply is a separate step from
  * the preview, so it's on you to have committed first if you want that.
  *
- * Until the packages are on npm, @precedence/cli / instrument / viewer are local
- * `file:` siblings (see README). All Apache-2.0.
+ * @precedence-dev/cli / instrument / viewer are normal semver deps from npm.
+ * All FSL-1.1-ALv2 (each release converts to Apache-2.0 two years after it ships).
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -26,7 +26,7 @@ import { readPlan, writeDraftPlan, planPath } from "./plan";
 import { pick, bakePicker } from "./pick";
 import * as wire from "./wire";
 import { apply, preview, type WizardInstrumentOpts } from "./apply";
-import type { Plan } from "@precedence/instrument";
+import type { Plan } from "@precedence-dev/instrument";
 
 const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`;
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
@@ -92,9 +92,9 @@ function parseArgs(argv: string[]): Opts {
 const HELP = `precedence-wizard: scan a project, pick outcomes, instrument them
 
 USAGE
-  npx @precedence/wizard --track "track from @/lib/analytics"
+  npx @precedence-dev/wizard --track "track from @/lib/analytics"
       scan, open the picker, and print the diff when you send it back
-  npx @precedence/wizard --track "track from @/lib/analytics" --apply
+  npx @precedence-dev/wizard --track "track from @/lib/analytics" --apply
       ...and write it (asks first when run interactively)
 
 OPTIONS
@@ -114,9 +114,9 @@ OPTIONS
 /** non-Next: the picker's one-time bundler wiring (Next goes through wire.ts) */
 function stampLoaderHint(_framework: string): string {
   return [
-    "  the picker resolves clicks via @precedence/cli/stamp-loader — wire it into",
+    "  the picker resolves clicks via @precedence-dev/cli/stamp-loader — wire it into",
     "  your bundler for *.jsx/*.tsx (dev only) and load precedencePicker() from",
-    "  @precedence/sdk at startup, then restart.",
+    "  @precedence-dev/sdk at startup, then restart.",
   ].join("\n");
 }
 
@@ -192,8 +192,8 @@ function printWiringHint(cwd: string, project: ProjectInfo): boolean {
     return true;
   }
   if (!wire.hasSdk(cwd)) {
-    console.log(yellow("  install @precedence/sdk and @precedence/cli, then re-run:"));
-    console.log(`    ${cyan("npm i @precedence/sdk @precedence/cli")}`);
+    console.log(yellow("  install @precedence-dev/sdk and @precedence-dev/cli, then re-run:"));
+    console.log(`    ${cyan("npm i @precedence-dev/sdk @precedence-dev/cli")}`);
     return false;
   }
   const ic = wire.instrumentationClient(cwd);
@@ -328,7 +328,7 @@ async function main(): Promise<void> {
 
   if (opts.emit === "direct" && !opts.track) {
     console.log(yellow("\n  next: preview the diff this plan produces."));
-    console.log(`  ${cyan('npx @precedence/wizard --track "track from @/lib/analytics" --apply')}`);
+    console.log(`  ${cyan('npx @precedence-dev/wizard --track "track from @/lib/analytics" --apply')}`);
     console.log(dim("  (--track names the import for the generated calls; --emit runtime skips it)"));
     process.exitCode = 2;
     return;
