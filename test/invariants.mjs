@@ -117,8 +117,11 @@ check("cli: --track carries its value", parseArgs(["--track", "track from @/lib/
 check("cli: --dir is repeatable, overrides source-dir auto-detection",
   JSON.stringify(parseArgs(["--dir", "apps/web/src", "--dir", "packages/ui"]).dirs) === JSON.stringify(["apps/web/src", "packages/ui"])
     && JSON.stringify(parseArgs([]).dirs) === "[]");
-check("cli: --no-serve / -y / --app", parseArgs(["--no-serve"]).serve === false && parseArgs(["-y"]).yes === true
-  && parseArgs([]).serve === true && parseArgs(["--app", "http://localhost:4000"]).app === "http://localhost:4000");
+check("cli: the removed --no-serve is now an unknown flag",
+  (() => { try { parseArgs(["--no-serve"]); return false; } catch { return true; } })());
+check("cli: -y / --app / --ci", parseArgs(["-y"]).yes === true
+  && parseArgs(["--app", "http://localhost:4000"]).app === "http://localhost:4000"
+  && parseArgs(["--ci"]).ci === true);
 
 /* ---- the published binary actually runs main() (not just when run directly) ---- */
 {
@@ -130,8 +133,8 @@ check("cli: --no-serve / -y / --app", parseArgs(["--no-serve"]).serve === false 
     status === 0 && /USAGE/.test(out) && /--track/.test(out), JSON.stringify({ status, out: out.slice(0, 120) }));
 }
 
-/* ---- the wizard runs in a plain directory, no VCS required (--no-serve so it
-       bakes the picker and exits instead of waiting on a browser) ---- */
+/* ---- the wizard runs in a plain directory, no VCS required (--ci so it
+       scaffolds a draft plan and exits instead of waiting on a browser) ---- */
 {
   const plainDir = fs.mkdtempSync(path.join(os.tmpdir(), "pm-nogit-"));
   fs.mkdirSync(path.join(plainDir, "src"));
@@ -139,12 +142,12 @@ check("cli: --no-serve / -y / --app", parseArgs(["--no-serve"]).serve === false 
   fs.writeFileSync(path.join(plainDir, "package.json"), JSON.stringify({ dependencies: { react: "^18.0.0" } }));
   const bin = path.resolve(here, "../bin/precedence-wizard.js");
   let out = "", status = 0;
-  try { out = execFileSync("node", [bin, "--no-serve", "--no-open"], { cwd: plainDir, encoding: "utf8" }); }
+  try { out = execFileSync("node", [bin, "--ci", "--no-open"], { cwd: plainDir, encoding: "utf8" }); }
   catch (e) { out = (e.stdout || "") + (e.stderr || ""); status = e.status ?? 1; }
-  check("cli: a scan in a non-git directory succeeds (exit 0, catalog + baked picker written)",
+  check("cli: a scan in a non-git directory succeeds (exit 0, catalog + draft plan written)",
     status === 0 && /attach point/.test(out)
       && fs.existsSync(path.join(plainDir, ".precedence", "catalog.pcs"))
-      && fs.existsSync(path.join(plainDir, ".precedence", "viewer.html")),
+      && fs.existsSync(path.join(plainDir, ".precedence", "plan.json")),
     JSON.stringify({ status, out: out.slice(0, 160) }));
   fs.rmSync(plainDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }

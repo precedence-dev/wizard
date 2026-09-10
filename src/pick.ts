@@ -2,12 +2,9 @@
  * The pick step: serve the picker (@precedence-dev/viewer), open the user's running
  * app at `?precedence=pick` so its @precedence-dev/sdk loads the agent, wait for the
  * agent to POST the plan, write it to .precedence/plan.json.
- *
- * `bakePicker` is the --no-serve fallback: a static viewer.html to export by hand.
  */
 import * as fs from "node:fs";
-import * as path from "node:path";
-import { servePlan, renderHtml, openInBrowser } from "@precedence-dev/viewer";
+import { servePlan, openInBrowser } from "@precedence-dev/viewer";
 import type { Catalog } from "@precedence-dev/cli";
 import { planPath, readPlan } from "./plan";
 
@@ -33,11 +30,4 @@ export async function pick(cwd: string, catalog: Catalog, opts: { devUrl: string
   const out = planPath(cwd);
   fs.writeFileSync(out, JSON.stringify(plan, null, 2) + "\n");
   return { plan, path: out };
-}
-
-export function bakePicker(cwd: string, catalog: Catalog, opts: { open?: boolean } = {}): string {
-  const out = path.join(cwd, ".precedence", "viewer.html");
-  fs.writeFileSync(out, renderHtml(catalog as unknown as ViewerCatalog));
-  if (opts.open !== false) openInBrowser(out);
-  return out;
 }

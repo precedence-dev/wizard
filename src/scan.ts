@@ -29,9 +29,9 @@ export function writeCatalog(cwd: string, catalog: Catalog): string {
   const dir = path.dirname(out);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(out, JSON.stringify(catalog, null, 2) + "\n");
-  // A courtesy for git users: the catalog + baked picker are regenerable
-  // artifacts; the plan is the reviewed source of truth and stays tracked.
+  // A courtesy for git users: the catalog is a regenerable artifact; the plan
+  // is the reviewed source of truth and stays tracked.
   const ignore = path.join(dir, ".gitignore");
-  if (!fs.existsSync(ignore)) fs.writeFileSync(ignore, "# regenerable artifacts\ncatalog.pcs\nviewer.html\n");
+  if (!fs.existsSync(ignore)) fs.writeFileSync(ignore, "# regenerable artifacts\ncatalog.pcs\n");
   return out;
 }
