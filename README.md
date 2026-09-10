@@ -28,9 +28,13 @@ npx @precedence-dev/wizard --apply  # …and write it
    - wraps `next.config` with `withPrecedence(...)` in place when the export is an
      unambiguous `export default nextConfig`; otherwise prints the one-line change
    - restart your dev server, then it waits for it to come up
-3. **Pick** — opens your running app at `?precedence=pick`; the picker overlay
-   appears. Hover and click real elements, name the outcomes to track, then
-   **send to wizard**. The plan comes straight back.
+3. **Pick** — opens your running app at `?precedence=pick`; a right-side drawer
+   appears. Hover and click real elements; for each outcome you check, name it,
+   add a one-line meaning, and tick the properties to send. **Pause** lets you
+   click through the app normally. Anything already in `.precedence/plan.json`
+   shows up marked `● in plan` and is carried through — the picker merges, it
+   doesn't replace. **Send to wizard** when done. If a plan already exists the
+   wizard asks whether to open the picker or use it as-is.
 4. **Preview** — the exact source diff is printed: one
    `precedence.track("event", { psc_id, …props })` per branch + an
    `import { precedence } from "@precedence-dev/sdk"`.

@@ -283,12 +283,20 @@ async function scanThenPick(cwd: string, project: ProjectInfo, opts: Opts): Prom
   return picked.plan as Plan;
 }
 
-/** An existing plan.json, else the scan → pick flow. null = nothing more to do. */
+/** An existing plan.json, else the scan → pick flow. null = nothing more to do.
+ *  When a plan exists, offer the picker anyway (seeded with it) so you can see
+ *  what's tracked and add more — default is to use it as-is. */
 async function resolvePlan(cwd: string, project: ProjectInfo, opts: Opts): Promise<Plan | null> {
   const existing = readPlan(cwd) as Plan | null;
   if (!existing) return scanThenPick(cwd, project, opts);
+
   const events = Array.isArray(existing.events) ? existing.events.length : 0;
   console.log(`  plan: ${cyan(planPath(cwd))} — ${events} event(s)`);
+
+  const canPick = opts.serve && !opts.ci && process.stdin.isTTY;
+  if (canPick && (await confirm("  open the picker to review / add to it? [y/N] "))) {
+    return scanThenPick(cwd, project, opts); // pick() seeds from the plan on disk and returns the merged result
+  }
   return existing;
 }
 

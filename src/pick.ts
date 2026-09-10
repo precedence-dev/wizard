@@ -9,15 +9,17 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { servePlan, renderHtml, openInBrowser } from "@precedence-dev/viewer";
 import type { Catalog } from "@precedence-dev/cli";
-import { planPath } from "./plan";
+import { planPath, readPlan } from "./plan";
 
 type ViewerCatalog = Parameters<typeof servePlan>[0];
 
 export interface PickResult { plan: { events?: unknown[] } & Record<string, unknown>; path: string; }
 
 export async function pick(cwd: string, catalog: Catalog, opts: { devUrl: string; open?: boolean }): Promise<PickResult> {
+  const existing = readPlan(cwd); // seeds the picker so it shows / merges what's already tracked
   const plan = (await servePlan(catalog as unknown as ViewerCatalog, {
     open: false,
+    plan: existing ?? undefined,
     onListen: (serverUrl) => {
       const at = serverUrl.replace(/\/$/, "");
       const appUrl = `${opts.devUrl.replace(/\/$/, "")}/?precedence=pick&at=${encodeURIComponent(at)}`;
