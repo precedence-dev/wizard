@@ -2,7 +2,7 @@
 /**
  * `precedence-wizard`: scan a project, open the picker, preview, then apply.
  *
- *   npx @precedence-dev/wizard                    # scan -> open the picker in your running app
+ *   npx @precedence-dev/wizard                    # scan -> open @precedence-dev/viewer
  *   # ...pick outcomes, save .precedence/plan.json...
  *   npx @precedence-dev/wizard --track "<spec>"           # preview the source diff
  *   npx @precedence-dev/wizard --track "<spec>" --apply   # write it
@@ -10,10 +10,9 @@
  *   npx @precedence-dev/wizard --ci     # scan -> scaffold a draft plan.json to hand-edit
  *
  * Framework-agnostic and VCS-agnostic: it reads and writes plain files, the
- * scan runs the real analyzer in-process, picking happens in the live picker
- * overlay served by @precedence-dev/viewer, applying is @precedence-dev/instrument.
- * --apply is a separate step from the preview, so it's on you to have committed
- * first if you want that.
+ * scan runs the real analyzer in-process, picking happens in the standalone
+ * viewer, applying is @precedence-dev/instrument. --apply is a separate step from
+ * the preview, so it's on you to have committed first if you want that.
  *
  * @precedence-dev/cli / instrument / viewer are normal semver deps from npm.
  * All FSL-1.1-ALv2 (each release converts to Apache-2.0 two years after it ships).
@@ -24,7 +23,7 @@ import * as readline from "node:readline";
 import { detectProject, type ProjectInfo } from "./detect";
 import { scan, writeCatalog } from "./scan";
 import { readPlan, writeDraftPlan, planPath } from "./plan";
-import { pick } from "./pick";
+import { pick, bakePicker } from "./pick";
 import * as wire from "./wire";
 import { apply, preview, type WizardInstrumentOpts } from "./apply";
 import type { Plan } from "@precedence-dev/instrument";
@@ -42,6 +41,7 @@ interface Opts {
   dirs: string[];
   types: boolean;
   ci: boolean;
+  serve: boolean;
   open: boolean;
   app?: string;
   help: boolean;
@@ -58,6 +58,8 @@ const OPTIONS = new Map<string, OptHandler>([
   ["--yes", (o) => { o.yes = true; }],
   ["--types", (o) => { o.types = true; }],
   ["--ci", (o) => { o.ci = true; }],
+  ["--serve", (o) => { o.serve = true; }],
+  ["--no-serve", (o) => { o.serve = false; }],
   ["--open", (o) => { o.open = true; }],
   ["--no-open", (o) => { o.open = false; }],
   ["--app", (o, next) => { o.app = next(); }],
@@ -67,7 +69,7 @@ const OPTIONS = new Map<string, OptHandler>([
 ]);
 
 function parseArgs(argv: string[]): Opts {
-  const o: Opts = { apply: false, yes: false, dirs: [], types: false, ci: false, open: true, help: false };
+  const o: Opts = { apply: false, yes: false, dirs: [], types: false, ci: false, serve: true, open: true, help: false };
   const cur = { i: 0 };
   const next = (a: string): string => {
     const v = argv[++cur.i];
@@ -107,6 +109,7 @@ OPTIONS
   --types           resolve declared types (slower, enables interprocedural outcomes)
   --app <url>        your running dev server (default: guessed from package.json)
   --ci              non-interactive: write a draft plan.json instead of the pick step
+  --no-serve        bake a static picker to export by hand instead of serving it
   --no-open         don't launch a browser
   -h, --help
 `;
@@ -241,9 +244,8 @@ async function printWiringHint(cwd: string, project: ProjectInfo, opts: Opts): P
   return true;
 }
 
-/** Scan, then serve the picker (or, with --ci, scaffold a draft plan) and wait
- *  for the browser to send a plan back. null = handled here, nothing more for
- *  main() to do. */
+/** Serve the picker (or bake it / scaffold a draft) and wait for the browser to
+ *  send a plan back. null = handled here, nothing more for main() to do. */
 async function scanThenPick(cwd: string, project: ProjectInfo, opts: Opts): Promise<Plan | null> {
   console.log(`  framework: ${project.framework === "unknown" ? dim("not detected (scanning anyway)") : project.framework}`);
   console.log(`  scanning: ${project.srcDirs.join(", ")}`);
@@ -256,6 +258,12 @@ async function scanThenPick(cwd: string, project: ProjectInfo, opts: Opts): Prom
   if (opts.ci) {
     const draft = writeDraftPlan(cwd, catalog);
     console.log(`\n  wrote draft ${cyan(draft)} — edit it down to the events you want, then re-run.`);
+    return null;
+  }
+  if (!opts.serve) {
+    const html = bakePicker(cwd, catalog, { open: opts.open });
+    console.log(`\n  picker baked: ${cyan(html)}`);
+    console.log(`  pick outcomes, export to ${cyan(planPath(cwd))}, then re-run.`);
     return null;
   }
 
@@ -285,7 +293,7 @@ async function resolvePlan(cwd: string, project: ProjectInfo, opts: Opts): Promi
   const events = Array.isArray(existing.events) ? existing.events.length : 0;
   console.log(`  plan: ${cyan(planPath(cwd))} — ${events} event(s)`);
 
-  const canPick = !opts.ci && process.stdin.isTTY;
+  const canPick = opts.serve && !opts.ci && process.stdin.isTTY;
   if (canPick && (await confirm("  open the picker to review / add to it? [y/N] "))) {
     return scanThenPick(cwd, project, opts); // pick() seeds from the plan on disk and returns the merged result
   }

@@ -47,18 +47,17 @@ No `--track` needed — the calls target `precedence.track` from
 `@precedence-dev/sdk`; pass `--track "myFn from @/lib/analytics"` only to bake
 into your own function. Drop `--apply` to stop after the preview.
 `.precedence/plan.json` is the source of truth for the events — keep it in the
-repo; a plan already present skips straight to preview. The picker runs as an
-overlay in your live app, so your dev server has to be up (`--ci` skips it and
-scaffolds a draft `plan.json` to hand-edit instead).
+repo; a plan already present skips straight to preview. `--no-serve` falls back
+to the static picker (browse a tree, export a file by hand).
 
 ## Why a browser step
 
-Deciding *what* is a meaningful event is product knowledge. The picker overlays
-your running app so growth/marketing can click the real thing, then name and
-**define** the event — no codebase access, no ticket. Engineering's part is
-bounded: the preview diff and the commit. The exported `plan.json` (names,
-definitions, properties, source anchors) is what both sides review and what
-stays in the repo as the answer to "what does this event mean".
+Deciding *what* is a meaningful event is product knowledge. The picker lets
+growth/marketing select, name, and **define** events off a catalog of real code
+paths — no codebase access, no ticket. Engineering's part is bounded: the preview
+diff and the commit. The exported `plan.json` (names, definitions, properties,
+source anchors) is what both sides review and what stays in the repo as the
+answer to "what does this event mean".
 
 ## Options
 
@@ -72,6 +71,7 @@ stays in the repo as the answer to "what does this event mean".
 | `--app <url>` | your running dev server (default: guessed from `package.json`) |
 | `--types` | resolve declared types (slower; enables interprocedural outcomes) |
 | `--ci` | non-interactive: scaffold a draft `plan.json` instead of the pick step |
+| `--no-serve` | bake a static picker to `.precedence/viewer.html` and export a file by hand |
 | `--no-open` | don't launch a browser |
 
 ## Packages

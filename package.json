@@ -1,6 +1,6 @@
 {
   "name": "@precedence-dev/wizard",
-  "version": "0.4.0",
+  "version": "0.3.1",
   "description": "Interactive setup: scan a repo, pick outcomes, instrument them. The one-command path into Precedence.",
   "license": "FSL-1.1-ALv2",
   "author": "Precedence",
@@ -29,7 +29,7 @@
   "dependencies": {
     "@precedence-dev/cli": "^0.2.0",
     "@precedence-dev/instrument": "^0.2.0",
-    "@precedence-dev/viewer": "^0.2.0"
+    "@precedence-dev/viewer": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
