@@ -8,12 +8,11 @@ export interface ApplyResult {
   applied: number;
   skipped: { id?: string; reason: string }[];
   warnings: { detail: string }[];
-  runtimeModule?: string;
+  delegatedModule?: string;
 }
 
 export interface WizardInstrumentOpts {
   track?: string;
-  emit?: "direct" | "runtime";
   types?: boolean;
 }
 
@@ -53,6 +52,6 @@ export function apply(cwd: string, project: ProjectInfo, plan: Plan, trackOrOpts
     applied: result.applied.length,
     skipped: result.skipped,
     warnings: result.warnings,
-    runtimeModule: result.runtimeModule,
+    delegatedModule: result.delegatedModule,
   };
 }

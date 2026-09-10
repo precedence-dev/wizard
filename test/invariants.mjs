@@ -98,11 +98,14 @@ check("apply: re-running is idempotent (already-instrumented, unchanged)",
 /* ---- parseArgs: the CLI's own contract ---- */
 check("cli: --help is recognised, not rejected as an unknown option", parseArgs(["--help"]).help === true);
 check("cli: -h too", parseArgs(["-h"]).help === true);
-check("cli: --emit runtime is accepted", parseArgs(["--emit", "runtime"]).emit === "runtime");
-check("cli: a bogus --emit value is rejected", (() => { try { parseArgs(["--emit", "sideways"]); return false; } catch { return true; } })());
+check("cli: --delegated carries its value", parseArgs(["--delegated", "src/pm-tracking.ts"]).delegated === "src/pm-tracking.ts");
+check("cli: the removed --emit is now an unknown flag", (() => { try { parseArgs(["--emit", "runtime"]); return false; } catch { return true; } })());
 check("cli: an unknown flag is rejected", (() => { try { parseArgs(["--nope"]); return false; } catch { return true; } })());
 check("cli: the removed --allow-dirty is now an unknown flag", (() => { try { parseArgs(["--allow-dirty"]); return false; } catch { return true; } })());
 check("cli: --track carries its value", parseArgs(["--track", "track from @/lib/analytics"]).track === "track from @/lib/analytics");
+check("cli: --dir is repeatable, overrides source-dir auto-detection",
+  JSON.stringify(parseArgs(["--dir", "apps/web/src", "--dir", "packages/ui"]).dirs) === JSON.stringify(["apps/web/src", "packages/ui"])
+    && JSON.stringify(parseArgs([]).dirs) === "[]");
 check("cli: --no-serve / -y / --app", parseArgs(["--no-serve"]).serve === false && parseArgs(["-y"]).yes === true
   && parseArgs([]).serve === true && parseArgs(["--app", "http://localhost:4000"]).app === "http://localhost:4000");
 

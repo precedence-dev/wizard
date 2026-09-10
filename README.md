@@ -11,10 +11,13 @@ required.
 ## The flow
 
 ```sh
-npx @precedence-dev/wizard --track "track from @/lib/analytics" --apply
+npx @precedence-dev/wizard          # scan → pick → preview
+npx @precedence-dev/wizard --apply  # …and write it
 ```
 
-1. **Scan** — writes `.precedence/catalog.pcs`.
+1. **Scan** — writes `.precedence/catalog.pcs`. Source dirs are auto-detected
+   (`src` / `app` / `pages` / `components`, else the repo root); `--dir <path>`
+   (repeatable) overrides that for monorepos.
 2. **Set up** (Next, first run only, no `layout.tsx` edit — the Sentry model):
    - `npm i @precedence-dev/sdk @precedence-dev/cli` if they're missing
    - the wizard writes `instrumentation-client.ts` (Next auto-loads it; it calls
@@ -25,31 +28,37 @@ npx @precedence-dev/wizard --track "track from @/lib/analytics" --apply
 3. **Pick** — opens your running app at `?precedence=pick`; the picker overlay
    appears. Hover and click real elements, name the outcomes to track, then
    **send to wizard**. The plan comes straight back.
-4. **Preview** — the exact source diff is printed.
-5. **Apply** — with `--apply`, it writes; run interactively, it asks first.
+4. **Preview** — the exact source diff is printed: one
+   `precedence.track("event", { psc_id, …props })` per branch + an
+   `import { precedence } from "@precedence-dev/sdk"`.
+5. **Apply** — with `--apply`, it writes; run interactively, it asks first. Then
+   call `installPrecedence({ endpoint: "<your collector>" })` once at your app
+   root (`@precedence-dev/sdk`) — omit `endpoint` to `console.debug` in dev.
 
 The wizard guesses your dev URL from `package.json` (`--app <url>` to override).
-Drop `--apply` to stop after the preview. `.precedence/plan.json` is the source
-of truth for the events — keep it in the repo; a plan already present skips
-straight to preview. `--no-serve` falls back to the static picker (browse a
-tree, export a file by hand).
+No `--track` needed — the calls target `precedence.track` from
+`@precedence-dev/sdk`; pass `--track "myFn from @/lib/analytics"` only to bake
+into your own function. Drop `--apply` to stop after the preview.
+`.precedence/plan.json` is the source of truth for the events — keep it in the
+repo; a plan already present skips straight to preview. `--no-serve` falls back
+to the static picker (browse a tree, export a file by hand).
 
 ## Why a browser step
 
 Deciding *what* is a meaningful event is product knowledge. The picker lets
 growth/marketing select, name, and **define** events off a catalog of real code
-paths — no codebase access, no ticket. Engineering's part is bounded: the one
-`--track` import, the preview diff, the commit. The exported `plan.json` (names,
-definitions, properties, source anchors) is what both sides review and what stays
-in the repo as the answer to "what does this event mean".
+paths — no codebase access, no ticket. Engineering's part is bounded: the preview
+diff and the commit. The exported `plan.json` (names, definitions, properties,
+source anchors) is what both sides review and what stays in the repo as the
+answer to "what does this event mean".
 
 ## Options
 
 | flag | meaning |
 | --- | --- |
-| `--track <spec>` | e.g. `"track from @/lib/analytics"` — required for direct mode |
-| `--emit direct` \| `runtime` | `direct` bakes `track(...)` calls in; `runtime` emits `globalThis.__pm?.(…)` + needs [`@precedence-dev/sdk`](https://github.com/precedence-dev/sdk) at the app root |
-| `--runtime <file>` | direct mode: write the delegated-link listener here on `--apply` |
+| `--dir <path>` | source dir to scan, repeatable (default: auto-detect, else repo root) |
+| `--track <spec>` | override the call target (default `precedence.track from @precedence-dev/sdk`); e.g. `"myFn from @/lib/analytics"` to bake into your own function |
+| `--delegated <file>` | write the synthetic-anchor listener here on `--apply` (links / bare buttons); import it once at your app root |
 | `--apply` | write source after the preview |
 | `-y`, `--yes` | skip the "apply?" confirmation |
 | `--app <url>` | your running dev server (default: guessed from `package.json`) |

@@ -37,8 +37,8 @@ interface Opts {
   apply: boolean;
   yes: boolean;
   track?: string;
-  emit: "direct" | "runtime";
-  runtime?: string;
+  delegated?: string;
+  dirs: string[];
   types: boolean;
   ci: boolean;
   serve: boolean;
@@ -63,17 +63,13 @@ const OPTIONS = new Map<string, OptHandler>([
   ["--open", (o) => { o.open = true; }],
   ["--no-open", (o) => { o.open = false; }],
   ["--app", (o, next) => { o.app = next(); }],
+  ["--dir", (o, next) => { o.dirs.push(next()); }],
   ["--track", (o, next) => { o.track = next(); }],
-  ["--runtime", (o, next) => { o.runtime = next(); }],
-  ["--emit", (o, next) => {
-    const v = next();
-    if (v !== "direct" && v !== "runtime") throw new Error("--emit must be direct or runtime");
-    o.emit = v;
-  }],
+  ["--delegated", (o, next) => { o.delegated = next(); }],
 ]);
 
 function parseArgs(argv: string[]): Opts {
-  const o: Opts = { apply: false, yes: false, emit: "direct", types: false, ci: false, serve: true, open: true, help: false };
+  const o: Opts = { apply: false, yes: false, dirs: [], types: false, ci: false, serve: true, open: true, help: false };
   const cur = { i: 0 };
   const next = (a: string): string => {
     const v = argv[++cur.i];
@@ -92,15 +88,18 @@ function parseArgs(argv: string[]): Opts {
 const HELP = `precedence-wizard: scan a project, pick outcomes, instrument them
 
 USAGE
-  npx @precedence-dev/wizard --track "track from @/lib/analytics"
+  npx @precedence-dev/wizard
       scan, open the picker, and print the diff when you send it back
-  npx @precedence-dev/wizard --track "track from @/lib/analytics" --apply
+  npx @precedence-dev/wizard --apply
       ...and write it (asks first when run interactively)
 
 OPTIONS
-  --track <spec>    required for direct mode; e.g. "track from @/lib/analytics"
-  --emit <mode>     direct (default) or runtime
-  --runtime <file>  direct mode: write delegated-link listener here on --apply
+  --dir <path>       source dir to scan, repeatable (default: auto — src / app /
+                    pages / components, else the repo root). Use for monorepos.
+  --track <spec>     override the call target (default: precedence.track from
+                    @precedence-dev/sdk); e.g. "myTrack from @/lib/analytics"
+  --delegated <file> write the synthetic-anchor listener here on --apply (links /
+                    bare buttons only); import it once at your app root
   --apply           write source after the preview
   -y, --yes         skip the "apply?" confirmation
   --types           resolve declared types (slower, enables interprocedural outcomes)
@@ -267,7 +266,7 @@ function previewPhase(cwd: string, project: ProjectInfo, plan: Plan, iOpts: Wiza
   proposed.warnings.forEach((w) => console.log(yellow(`  ! ${w.detail}`)));
   proposed.skipped.forEach((s) => console.log(yellow(`  - ${s.id || s.event}: ${s.reason}`)));
   changed.forEach((f) => console.log("\n" + previewDiff(f.file, f.before, f.after)));
-  if (proposed.runtimeModule) console.log(dim("\n  Links/bare buttons need a generated listener: pass --runtime src/pm-tracking.ts when applying."));
+  if (proposed.delegatedModule) console.log(dim("\n  Links / bare buttons need a generated listener: pass --delegated src/pm-tracking.ts when applying."));
   if (!changed.length) { console.log("\n  nothing to apply."); return null; }
   return changed;
 }
@@ -288,7 +287,7 @@ function logList(header: string, items: string[]): void {
   for (const it of items) console.log(`    ${it}`);
 }
 
-function reportApplyResult(result: ReturnType<typeof apply>, opts: Opts): void {
+function reportApplyResult(result: ReturnType<typeof apply>): void {
   if (result.changed.length) {
     console.log(`\n  ${bold(String(result.applied))} call(s) applied across ${result.changed.length} file(s):`);
     for (const f of result.changed) console.log(`    ${cyan(f)}`);
@@ -299,18 +298,21 @@ function reportApplyResult(result: ReturnType<typeof apply>, opts: Opts): void {
   logList(yellow(`\n  ${result.skipped.length} anchor(s) skipped:`),
     result.skipped.map((s) => `${s.id ? s.id + ": " : ""}${s.reason}`));
   if (result.changed.length) console.log(`\n  ${bold("next")}: review the diff and commit it on its own.`);
-  if (opts.emit === "runtime") console.log(dim("\n  Runtime mode also needs installPrecedence({ track, planUrl }) at your app root and the committed plan deployed to that URL."));
+  console.log(dim(
+    "\n  Then call installPrecedence({ endpoint: \"<your collector>\" }) once at your app root" +
+    "\n  (omit endpoint to console.debug in dev; add planUrl to retune events without a rebuild).",
+  ));
 }
 
 function applyPhase(cwd: string, project: ProjectInfo, plan: Plan, opts: Opts, iOpts: WizardInstrumentOpts): void {
   const result = apply(cwd, project, plan, iOpts);
-  if (opts.runtime && result.runtimeModule) {
-    const output = path.resolve(opts.runtime);
+  if (opts.delegated && result.delegatedModule) {
+    const output = path.resolve(opts.delegated);
     fs.mkdirSync(path.dirname(output), { recursive: true });
-    fs.writeFileSync(output, result.runtimeModule);
+    fs.writeFileSync(output, result.delegatedModule);
     console.log(`\n  wrote delegated listener ${cyan(output)}`);
   }
-  reportApplyResult(result, opts);
+  reportApplyResult(result);
 }
 
 async function main(): Promise<void> {
@@ -322,19 +324,12 @@ async function main(): Promise<void> {
   const cwd = process.cwd();
   console.log(bold("\nprecedence-wizard\n"));
   const project = detectProject(cwd);
+  if (opts.dirs.length) project.srcDirs = opts.dirs;   // --dir overrides auto-detection (monorepos, non-standard layouts)
 
   const plan = await resolvePlan(cwd, project, opts);
   if (!plan) return;
 
-  if (opts.emit === "direct" && !opts.track) {
-    console.log(yellow("\n  next: preview the diff this plan produces."));
-    console.log(`  ${cyan('npx @precedence-dev/wizard --track "track from @/lib/analytics" --apply')}`);
-    console.log(dim("  (--track names the import for the generated calls; --emit runtime skips it)"));
-    process.exitCode = 2;
-    return;
-  }
-
-  const iOpts: WizardInstrumentOpts = { track: opts.track, emit: opts.emit, types: opts.types };
+  const iOpts: WizardInstrumentOpts = { track: opts.track, types: opts.types };
   const changed = previewPhase(cwd, project, plan, iOpts);
   if (!changed) return;
   if (!(await shouldApply(opts, changed.length))) return;
