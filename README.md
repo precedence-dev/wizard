@@ -1,8 +1,10 @@
 # @precedence-dev/wizard
 
 The one-command path into Precedence: scan a project, pick the outcomes worth
-tracking in a browser, review the diff, apply it. It never modifies your app on
-its own — the scan runs the real analyzer in-process, picking happens in
+tracking in a browser, review the diff, apply it. Every project change — the
+package install, the `next.config` wrap, the source edits — is shown and
+confirmed first (`-y` to skip the prompts). The scan runs the real analyzer
+in-process, picking happens in
 [`@precedence-dev/viewer`](https://github.com/precedence-dev/sdk/tree/main/packages/viewer),
 applying is [`@precedence-dev/instrument`](https://github.com/precedence-dev/instrument).
 Nothing reads your source into an LLM; every step is deterministic. No VCS
@@ -18,13 +20,14 @@ npx @precedence-dev/wizard --apply  # …and write it
 1. **Scan** — writes `.precedence/catalog.pcs`. Source dirs are auto-detected
    (`src` / `app` / `pages` / `components`, else the repo root); `--dir <path>`
    (repeatable) overrides that for monorepos.
-2. **Set up** (Next, first run only, no `layout.tsx` edit — the Sentry model):
-   - `npm i @precedence-dev/sdk @precedence-dev/cli` if they're missing
-   - the wizard writes `instrumentation-client.ts` (Next auto-loads it; it calls
+2. **Set up** (Next, first run only, no `layout.tsx` edit):
+   - installs `@precedence-dev/sdk` (+ `-D @precedence-dev/cli`) if they're
+     missing — detects npm / pnpm / yarn / bun, asks first (`-y` to skip)
+   - writes `instrumentation-client.ts` (Next auto-loads it; it calls
      `precedencePicker()`)
-   - it prints the **one line** to change in `next.config` — wrap it with
-     `withPrecedence(...)` — then restart your dev server
-   - it waits for your dev server to come up
+   - wraps `next.config` with `withPrecedence(...)` in place when the export is an
+     unambiguous `export default nextConfig`; otherwise prints the one-line change
+   - restart your dev server, then it waits for it to come up
 3. **Pick** — opens your running app at `?precedence=pick`; the picker overlay
    appears. Hover and click real elements, name the outcomes to track, then
    **send to wizard**. The plan comes straight back.
@@ -60,7 +63,7 @@ answer to "what does this event mean".
 | `--track <spec>` | override the call target (default `precedence.track from @precedence-dev/sdk`); e.g. `"myFn from @/lib/analytics"` to bake into your own function |
 | `--delegated <file>` | write the synthetic-anchor listener here on `--apply` (links / bare buttons); import it once at your app root |
 | `--apply` | write source after the preview |
-| `-y`, `--yes` | skip the "apply?" confirmation |
+| `-y`, `--yes` | skip the install + "apply?" confirmations |
 | `--app <url>` | your running dev server (default: guessed from `package.json`) |
 | `--types` | resolve declared types (slower; enables interprocedural outcomes) |
 | `--ci` | non-interactive: scaffold a draft `plan.json` instead of the pick step |

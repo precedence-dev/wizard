@@ -5,11 +5,25 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+export type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
+
 export interface ProjectInfo {
   framework: "next" | "react" | "unknown";
   srcDirs: string[];
   /** best guess at the local dev server URL, for the live picker */
   devUrl: string;
+  /** which package manager the wizard should shell out to for the auto-install */
+  pm: PackageManager;
+}
+
+/** `packageManager` field first (Corepack), then the lockfile, else npm. */
+function detectPm(cwd: string, pkg: Record<string, unknown> | null): PackageManager {
+  const field = typeof pkg?.packageManager === "string" ? pkg.packageManager : "";
+  for (const pm of ["pnpm", "yarn", "bun", "npm"] as const) if (field.startsWith(pm)) return pm;
+  if (fs.existsSync(path.join(cwd, "pnpm-lock.yaml"))) return "pnpm";
+  if (fs.existsSync(path.join(cwd, "yarn.lock"))) return "yarn";
+  if (fs.existsSync(path.join(cwd, "bun.lockb")) || fs.existsSync(path.join(cwd, "bun.lock"))) return "bun";
+  return "npm";
 }
 
 function readPackageJson(cwd: string): Record<string, unknown> | null {
@@ -28,7 +42,12 @@ export function detectProject(cwd: string): ProjectInfo {
   const candidates = ["src", "app", "pages", "components"];
   const srcDirs = candidates.filter((d) => fs.existsSync(path.join(cwd, d)) && fs.statSync(path.join(cwd, d)).isDirectory());
 
-  return { framework, srcDirs: srcDirs.length ? srcDirs : ["."], devUrl: detectDevUrl(pkg, deps) };
+  return {
+    framework,
+    srcDirs: srcDirs.length ? srcDirs : ["."],
+    devUrl: detectDevUrl(pkg, deps),
+    pm: detectPm(cwd, pkg),
+  };
 }
 
 /** The dev-server URL: a `--port`/`-p`/`PORT=` in the dev script wins, else the

@@ -58,6 +58,17 @@ check("detect: devUrl honours a --port in the dev script", (() => {
 })());
 const files = collectFiles(path.join(tmp, "src"));
 check("detect: finds the .tsx fixture", files.length === 1 && files[0].endsWith("Checkout.tsx"));
+check("detect: package manager — no lockfile → npm", project.pm === "npm");
+check("detect: package manager — lockfile + packageManager field", (() => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "pm-pm-"));
+  fs.writeFileSync(path.join(d, "package.json"), "{}");
+  fs.writeFileSync(path.join(d, "pnpm-lock.yaml"), "");
+  const byLock = detectProject(d).pm;
+  fs.writeFileSync(path.join(d, "package.json"), JSON.stringify({ packageManager: "yarn@4.1.0" }));
+  const byField = detectProject(d).pm;
+  fs.rmSync(d, { recursive: true, force: true });
+  return byLock === "pnpm" && byField === "yarn";
+})());
 
 /* ---- scan: the real analyzer, run in-process ---- */
 const { catalog, fileCount } = scan(tmp, project, {});
@@ -183,6 +194,48 @@ check("cli: --no-serve / -y / --app", parseArgs(["--no-serve"]).serve === false 
 
   check("wire: wrapHint is one line, ESM for .mjs / CJS for .js",
     /export default withPrecedence/.test(wire.wrapHint("next.config.mjs")) && /module\.exports = withPrecedence/.test(wire.wrapHint("next.config.js")));
+
+  /* wrapNextConfig: in-place edit for the unambiguous cases, "manual" otherwise */
+  {
+    const g = fs.mkdtempSync(path.join(os.tmpdir(), "pm-nc-"));
+    fs.writeFileSync(path.join(g, "next.config.mjs"), "const nextConfig = { reactStrictMode: true };\nexport default nextConfig;\n");
+    const r = wire.wrapNextConfig(g);
+    const out = fs.readFileSync(path.join(g, "next.config.mjs"), "utf8");
+    check("wire: wrapNextConfig wraps `export default <ident>` in place + adds the import",
+      r.status === "wrapped"
+        && /^import \{ withPrecedence \} from "@precedence-dev\/cli\/next";/.test(out)
+        && /export default withPrecedence\(nextConfig\);/.test(out)
+        && out.includes("reactStrictMode: true"));
+    check("wire: wrapNextConfig is idempotent (already wrapped → 'already', file untouched)",
+      wire.wrapNextConfig(g).status === "already" && fs.readFileSync(path.join(g, "next.config.mjs"), "utf8") === out);
+
+    fs.writeFileSync(path.join(g, "next.config.js"), "module.exports = { images: {} };\n");
+    fs.rmSync(path.join(g, "next.config.mjs"));
+    check("wire: wrapNextConfig leaves an inline-object config alone → 'manual'", wire.wrapNextConfig(g).status === "manual");
+
+    fs.writeFileSync(path.join(g, "next.config.js"), "const cfg = {};\nmodule.exports = cfg;\n");
+    const r2 = wire.wrapNextConfig(g);
+    check("wire: wrapNextConfig wraps a CJS `module.exports = <ident>` with require()",
+      r2.status === "wrapped"
+        && /^const \{ withPrecedence \} = require\("@precedence-dev\/cli\/next"\);/.test(fs.readFileSync(path.join(g, "next.config.js"), "utf8")));
+    fs.rmSync(g, { recursive: true, force: true });
+  }
+
+  /* missingDeps / installLines: no @precedence-dev/* resolvable from a bare temp dir */
+  {
+    const b = fs.mkdtempSync(path.join(os.tmpdir(), "pm-dep-"));
+    fs.writeFileSync(path.join(b, "package.json"), "{}");
+    const m = wire.missingDeps(b);
+    check("wire: missingDeps reports both packages when neither resolves",
+      JSON.stringify(m.deps) === JSON.stringify(["@precedence-dev/sdk"])
+        && JSON.stringify(m.devDeps) === JSON.stringify(["@precedence-dev/cli"]));
+    check("wire: installLines match the package manager",
+      JSON.stringify(wire.installLines("npm", m.deps, m.devDeps))
+        === JSON.stringify(["npm install @precedence-dev/sdk", "npm install --save-dev @precedence-dev/cli"])
+      && wire.installLines("pnpm", ["a"], [])[0] === "pnpm add a"
+      && wire.installLines("bun", [], ["b"])[0] === "bun add -d b");
+    fs.rmSync(b, { recursive: true, force: true });
+  }
 
   fs.rmSync(w, { recursive: true, force: true });
 

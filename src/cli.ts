@@ -93,6 +93,10 @@ USAGE
   npx @precedence-dev/wizard --apply
       ...and write it (asks first when run interactively)
 
+On a Next.js project the wizard installs @precedence-dev/sdk (+ -D
+@precedence-dev/cli) with your package manager and wraps next.config with
+withPrecedence — asking first, unless -y.
+
 OPTIONS
   --dir <path>       source dir to scan, repeatable (default: auto — src / app /
                     pages / components, else the repo root). Use for monorepos.
@@ -101,7 +105,7 @@ OPTIONS
   --delegated <file> write the synthetic-anchor listener here on --apply (links /
                     bare buttons only); import it once at your app root
   --apply           write source after the preview
-  -y, --yes         skip the "apply?" confirmation
+  -y, --yes         skip the install + "apply?" confirmations
   --types           resolve declared types (slower, enables interprocedural outcomes)
   --app <url>        your running dev server (default: guessed from package.json)
   --ci              non-interactive: write a draft plan.json instead of the pick step
@@ -113,15 +117,43 @@ OPTIONS
 /** non-Next: the picker's one-time bundler wiring (Next goes through wire.ts) */
 function stampLoaderHint(_framework: string): string {
   return [
-    "  the picker resolves clicks via @precedence-dev/cli/stamp-loader — wire it into",
-    "  your bundler for *.jsx/*.tsx (dev only) and load precedencePicker() from",
-    "  @precedence-dev/sdk at startup, then restart.",
+    "  wire the picker into your bundler (dev only):",
+    "    - add @precedence-dev/cli/stamp-loader for *.jsx/*.tsx",
+    "    - import { precedencePicker } from \"@precedence-dev/sdk\" and call it at startup",
+    "  then restart your dev server.",
   ].join("\n");
 }
 
-function confirm(question: string): Promise<boolean> {
+/** Install the two packages the app imports, prompting first. Returns false when
+ *  the user declines or the install fails (the caller prints the manual line). */
+async function ensureDeps(cwd: string, project: ProjectInfo, opts: Opts): Promise<boolean> {
+  const { deps, devDeps } = wire.missingDeps(cwd);
+  if (!deps.length && !devDeps.length) return true;
+
+  const lines = wire.installLines(project.pm, deps, devDeps);
+  console.log(yellow(`\n  ${[...deps, ...devDeps].join(", ")} not installed in this project.`));
+  const go = opts.yes || !process.stdin.isTTY || (await confirm(`  install now with ${project.pm}? [Y/n] `, true));
+  if (!go) {
+    lines.forEach((l) => console.log(`    ${cyan(l)}`));
+    console.log(dim("  ...then re-run the wizard."));
+    return false;
+  }
+  console.log("");
+  if (!wire.installDeps(cwd, project.pm, deps, devDeps)) {
+    console.log(yellow("\n  install failed — run it yourself:"));
+    lines.forEach((l) => console.log(`    ${cyan(l)}`));
+    return false;
+  }
+  return true;
+}
+
+function confirm(question: string, defaultYes = false): Promise<boolean> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => rl.question(question, (a) => { rl.close(); resolve(/^y(es)?$/i.test(a.trim())); }));
+  return new Promise((resolve) => rl.question(question, (a) => {
+    rl.close();
+    const t = a.trim();
+    resolve(t === "" ? defaultYes : /^y(es)?$/i.test(t));
+  }));
 }
 
 /** A unified-ish diff for the preview: LCS over lines so an inserted import and
@@ -184,27 +216,31 @@ function condense(ops: Array<[" " | "-" | "+", string]>, ctx = 3): string[] {
 
 type ChangedFile = ReturnType<typeof preview>["files"][number];
 
-/** framework-specific one-time wiring hints. false = a blocker was printed, stop. */
-function printWiringHint(cwd: string, project: ProjectInfo): boolean {
+/** framework-specific one-time wiring. false = a blocker was printed, stop. */
+async function printWiringHint(cwd: string, project: ProjectInfo, opts: Opts): Promise<boolean> {
+  if (!(await ensureDeps(cwd, project, opts))) return false;
+
   if (project.framework !== "next") {
+    console.log("");
     console.log(stampLoaderHint(project.framework));
     return true;
   }
-  if (!wire.hasSdk(cwd)) {
-    console.log(yellow("  install @precedence-dev/sdk and @precedence-dev/cli, then re-run:"));
-    console.log(`    ${cyan("npm i @precedence-dev/sdk @precedence-dev/cli")}`);
-    return false;
-  }
+
   const ic = wire.instrumentationClient(cwd);
   console.log(ic.status === "created" ? `  wrote ${cyan(ic.file)} (loads the picker in dev)`
     : ic.status === "present" ? `  ${dim(ic.file + " already loads the picker")}`
     : yellow(`  ${ic.file} exists — add a \`precedencePicker()\` call to it`));
-  const nc = wire.nextConfig(cwd);
-  if (!nc.wired) {
+
+  const nc = wire.wrapNextConfig(cwd);
+  if (nc.status === "wrapped") console.log(`  wrapped ${cyan(nc.file)} with withPrecedence`);
+  else if (nc.status === "already") console.log(dim(`  ${nc.file} already wrapped`));
+  else {
     console.log("");
-    console.log(wire.wrapHint(nc.file));
-    console.log(dim("\n  ...then restart your dev server (Next reads next.config once)."));
+    console.log(wire.wrapHint(nc.status === "none" ? null : nc.file));
   }
+
+  if (ic.status === "created" || nc.status === "wrapped")
+    console.log(dim("\n  restart your dev server — Next reads next.config + instrumentation-client once."));
   return true;
 }
 
@@ -221,7 +257,7 @@ async function scanThenPick(cwd: string, project: ProjectInfo, opts: Opts): Prom
 
   if (opts.ci) {
     const draft = writeDraftPlan(cwd, catalog);
-    console.log(`\n  wrote draft ${cyan(draft)} — edit it, then re-run with --track.`);
+    console.log(`\n  wrote draft ${cyan(draft)} — edit it down to the events you want, then re-run.`);
     return null;
   }
   if (!opts.serve) {
@@ -232,8 +268,7 @@ async function scanThenPick(cwd: string, project: ProjectInfo, opts: Opts): Prom
   }
 
   const devUrl = opts.app || project.devUrl;
-  console.log("");
-  if (!printWiringHint(cwd, project)) return null;
+  if (!(await printWiringHint(cwd, project, opts))) return null;
 
   console.log(dim(`\n  waiting for your app at ${devUrl} ...`));
   if (!(await wire.waitForServer(devUrl))) {

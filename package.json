@@ -1,6 +1,6 @@
 {
   "name": "@precedence-dev/wizard",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Interactive setup: scan a repo, pick outcomes, instrument them. The one-command path into Precedence.",
   "license": "FSL-1.1-ALv2",
   "author": "Precedence",
