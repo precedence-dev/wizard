@@ -17,7 +17,12 @@ import type { PackageManager } from "./detect";
 const RUNTIME_DEP = "@precedence-dev/sdk";
 const DEV_DEP = "@precedence-dev/cli";
 
-const IC_BODY = `import { precedencePicker } from "@precedence-dev/sdk";\n\n// dev-only: loads the Precedence picker when opened with ?precedence=pick\nprecedencePicker();\n`;
+/** `allowHost` is the configured server's hostname — `precedencePicker`
+ *  denies any non-localhost `at` origin unless it's allow-listed (see
+ *  @precedence-dev/sdk's runtime.ts and docs/byoc.md's security checklist). */
+function icBody(allowHost: string): string {
+  return `import { precedencePicker } from "@precedence-dev/sdk";\n\n// dev-only: loads the Precedence picker when opened with ?precedence=pick\nprecedencePicker({ allow: [${JSON.stringify(allowHost)}] });\n`;
+}
 
 function resolves(cwd: string, pkg: string): boolean {
   try { createRequire(path.join(cwd, "package.json")).resolve(pkg); return true; }
@@ -67,7 +72,10 @@ export function installDeps(cwd: string, pm: PackageManager, deps: string[], dev
   return true;
 }
 
-export function instrumentationClient(cwd: string): { file: string; status: "created" | "present" | "foreign" } {
+export function instrumentationClient(
+  cwd: string,
+  allowHost: string,
+): { file: string; status: "created" | "present" | "foreign" } {
   const dir = fs.existsSync(path.join(cwd, "src")) ? path.join(cwd, "src") : cwd;
   for (const ext of ["ts", "js", "mts", "mjs"]) {
     const f = path.join(dir, `instrumentation-client.${ext}`);
@@ -77,7 +85,7 @@ export function instrumentationClient(cwd: string): { file: string; status: "cre
     }
   }
   const f = path.join(dir, "instrumentation-client.ts");
-  fs.writeFileSync(f, IC_BODY);
+  fs.writeFileSync(f, icBody(allowHost));
   return { file: path.relative(cwd, f), status: "created" };
 }
 

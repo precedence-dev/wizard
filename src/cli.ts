@@ -23,10 +23,12 @@ import * as readline from "node:readline";
 import { detectProject, type ProjectInfo } from "./detect";
 import { scan, writeCatalog } from "./scan";
 import { readPlan, writeDraftPlan, planPath } from "./plan";
-import { pick, bakePicker } from "./pick";
+import { pick } from "./pick";
 import * as wire from "./wire";
 import { apply, preview, type WizardInstrumentOpts } from "./apply";
 import type { Plan } from "@precedence-dev/instrument";
+import { pushCatalog } from "./client";
+import { DEFAULT_SERVER, resolveConfig, saveApiKey, serverOrigin, writeProjectConfig, type ServerClient } from "./config";
 
 const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`;
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
@@ -41,9 +43,10 @@ interface Opts {
   dirs: string[];
   types: boolean;
   ci: boolean;
-  serve: boolean;
   open: boolean;
   app?: string;
+  server?: string;
+  apiKey?: string;
   help: boolean;
 }
 
@@ -58,18 +61,18 @@ const OPTIONS = new Map<string, OptHandler>([
   ["--yes", (o) => { o.yes = true; }],
   ["--types", (o) => { o.types = true; }],
   ["--ci", (o) => { o.ci = true; }],
-  ["--serve", (o) => { o.serve = true; }],
-  ["--no-serve", (o) => { o.serve = false; }],
   ["--open", (o) => { o.open = true; }],
   ["--no-open", (o) => { o.open = false; }],
   ["--app", (o, next) => { o.app = next(); }],
   ["--dir", (o, next) => { o.dirs.push(next()); }],
   ["--track", (o, next) => { o.track = next(); }],
   ["--delegated", (o, next) => { o.delegated = next(); }],
+  ["--server", (o, next) => { o.server = next(); }],
+  ["--api-key", (o, next) => { o.apiKey = next(); }],
 ]);
 
 function parseArgs(argv: string[]): Opts {
-  const o: Opts = { apply: false, yes: false, dirs: [], types: false, ci: false, serve: true, open: true, help: false };
+  const o: Opts = { apply: false, yes: false, dirs: [], types: false, ci: false, open: true, help: false };
   const cur = { i: 0 };
   const next = (a: string): string => {
     const v = argv[++cur.i];
@@ -97,6 +100,10 @@ On a Next.js project the wizard installs @precedence-dev/sdk (+ -D
 @precedence-dev/cli) with your package manager and wraps next.config with
 withPrecedence — asking first, unless -y.
 
+Picking outcomes always talks to a Precedence server (Cloud or your own BYOC
+deployment) — paste an API key the first time you run it and it's remembered
+per-server in ~/.precedence/auth.json. There's no fully-offline picker mode.
+
 OPTIONS
   --dir <path>       source dir to scan, repeatable (default: auto — src / app /
                     pages / components, else the repo root). Use for monorepos.
@@ -108,8 +115,9 @@ OPTIONS
   -y, --yes         skip the install + "apply?" confirmations
   --types           resolve declared types (slower, enables interprocedural outcomes)
   --app <url>        your running dev server (default: guessed from package.json)
-  --ci              non-interactive: write a draft plan.json instead of the pick step
-  --no-serve        bake a static picker to export by hand instead of serving it
+  --server <url>     Precedence server (default: Cloud, or .precedence/config.json)
+  --api-key <key>    project API key (default: PRECEDENCE_API_KEY, or the saved one)
+  --ci              non-interactive: write a draft plan.json and push the catalog
   --no-open         don't launch a browser
   -h, --help
 `;
@@ -217,7 +225,7 @@ function condense(ops: Array<[" " | "-" | "+", string]>, ctx = 3): string[] {
 type ChangedFile = ReturnType<typeof preview>["files"][number];
 
 /** framework-specific one-time wiring. false = a blocker was printed, stop. */
-async function printWiringHint(cwd: string, project: ProjectInfo, opts: Opts): Promise<boolean> {
+async function printWiringHint(cwd: string, project: ProjectInfo, opts: Opts, client: ServerClient): Promise<boolean> {
   if (!(await ensureDeps(cwd, project, opts))) return false;
 
   if (project.framework !== "next") {
@@ -226,7 +234,7 @@ async function printWiringHint(cwd: string, project: ProjectInfo, opts: Opts): P
     return true;
   }
 
-  const ic = wire.instrumentationClient(cwd);
+  const ic = wire.instrumentationClient(cwd, new URL(client.server).hostname);
   console.log(ic.status === "created" ? `  wrote ${cyan(ic.file)} (loads the picker in dev)`
     : ic.status === "present" ? `  ${dim(ic.file + " already loads the picker")}`
     : yellow(`  ${ic.file} exists — add a \`precedencePicker()\` call to it`));
@@ -244,9 +252,10 @@ async function printWiringHint(cwd: string, project: ProjectInfo, opts: Opts): P
   return true;
 }
 
-/** Serve the picker (or bake it / scaffold a draft) and wait for the browser to
- *  send a plan back. null = handled here, nothing more for main() to do. */
-async function scanThenPick(cwd: string, project: ProjectInfo, opts: Opts): Promise<Plan | null> {
+/** Push the catalog + (in --ci) scaffold a draft, or open a picker session and
+ *  wait for the browser to send a plan back. null = handled here, nothing
+ *  more for main() to do. */
+async function scanThenPick(cwd: string, project: ProjectInfo, opts: Opts, client: ServerClient): Promise<Plan | null> {
   console.log(`  framework: ${project.framework === "unknown" ? dim("not detected (scanning anyway)") : project.framework}`);
   console.log(`  scanning: ${project.srcDirs.join(", ")}`);
   const { catalog, fileCount } = scan(cwd, project, { types: opts.types });
@@ -256,19 +265,19 @@ async function scanThenPick(cwd: string, project: ProjectInfo, opts: Opts): Prom
   if (!catalog.attachPoints) { console.log(yellow("\n  nothing trackable found — nothing to pick.")); return null; }
 
   if (opts.ci) {
+    try {
+      await pushCatalog(client, { blob: catalog });
+      console.log(`  pushed catalog to ${cyan(client.server)}`);
+    } catch (e) {
+      console.log(yellow(`  ! couldn't push the catalog: ${e instanceof Error ? e.message : e}`));
+    }
     const draft = writeDraftPlan(cwd, catalog);
     console.log(`\n  wrote draft ${cyan(draft)} — edit it down to the events you want, then re-run.`);
     return null;
   }
-  if (!opts.serve) {
-    const html = bakePicker(cwd, catalog, { open: opts.open });
-    console.log(`\n  picker baked: ${cyan(html)}`);
-    console.log(`  pick outcomes, export to ${cyan(planPath(cwd))}, then re-run.`);
-    return null;
-  }
 
   const devUrl = opts.app || project.devUrl;
-  if (!(await printWiringHint(cwd, project, opts))) return null;
+  if (!(await printWiringHint(cwd, project, opts, client))) return null;
 
   console.log(dim(`\n  waiting for your app at ${devUrl} ...`));
   if (!(await wire.waitForServer(devUrl))) {
@@ -276,7 +285,7 @@ async function scanThenPick(cwd: string, project: ProjectInfo, opts: Opts): Prom
     return null;
   }
   console.log("");
-  const picked = await pick(cwd, catalog, { devUrl, open: opts.open });
+  const picked = await pick(cwd, catalog, { devUrl, open: opts.open, client });
   const n = Array.isArray(picked.plan.events) ? picked.plan.events.length : 0;
   if (!n) { console.log(yellow("\n  nothing sent from the picker — no events to instrument.")); return null; }
   console.log(`  received ${bold(String(n))} event(s) → ${cyan(picked.path)}`);
@@ -286,16 +295,16 @@ async function scanThenPick(cwd: string, project: ProjectInfo, opts: Opts): Prom
 /** An existing plan.json, else the scan → pick flow. null = nothing more to do.
  *  When a plan exists, offer the picker anyway (seeded with it) so you can see
  *  what's tracked and add more — default is to use it as-is. */
-async function resolvePlan(cwd: string, project: ProjectInfo, opts: Opts): Promise<Plan | null> {
+async function resolvePlan(cwd: string, project: ProjectInfo, opts: Opts, client: ServerClient): Promise<Plan | null> {
   const existing = readPlan(cwd) as Plan | null;
-  if (!existing) return scanThenPick(cwd, project, opts);
+  if (!existing) return scanThenPick(cwd, project, opts, client);
 
   const events = Array.isArray(existing.events) ? existing.events.length : 0;
   console.log(`  plan: ${cyan(planPath(cwd))} — ${events} event(s)`);
 
-  const canPick = opts.serve && !opts.ci && process.stdin.isTTY;
+  const canPick = !opts.ci && process.stdin.isTTY;
   if (canPick && (await confirm("  open the picker to review / add to it? [y/N] "))) {
-    return scanThenPick(cwd, project, opts); // pick() seeds from the plan on disk and returns the merged result
+    return scanThenPick(cwd, project, opts, client); // pick() seeds from the plan on disk and returns the merged result
   }
   return existing;
 }
@@ -330,7 +339,7 @@ function logList(header: string, items: string[]): void {
   for (const it of items) console.log(`    ${it}`);
 }
 
-function reportApplyResult(result: ReturnType<typeof apply>): void {
+function reportApplyResult(result: ReturnType<typeof apply>, client: ServerClient): void {
   if (result.changed.length) {
     console.log(`\n  ${bold(String(result.applied))} call(s) applied across ${result.changed.length} file(s):`);
     for (const f of result.changed) console.log(`    ${cyan(f)}`);
@@ -342,12 +351,13 @@ function reportApplyResult(result: ReturnType<typeof apply>): void {
     result.skipped.map((s) => `${s.id ? s.id + ": " : ""}${s.reason}`));
   if (result.changed.length) console.log(`\n  ${bold("next")}: review the diff and commit it on its own.`);
   console.log(dim(
-    "\n  Then call installPrecedence({ endpoint: \"<your collector>\" }) once at your app root" +
-    "\n  (omit endpoint to console.debug in dev; add planUrl to retune events without a rebuild).",
+    "\n  Then call installPrecedence({ endpoint: \"<your collector>\", planUrl: \"" + client.server.replace(/\/$/, "") +
+    "/v1/plan\", planToken: \"<api key>\" }) once at your app root" +
+    "\n  (omit endpoint to console.debug in dev; planUrl/planToken let you retune events without a rebuild).",
   ));
 }
 
-function applyPhase(cwd: string, project: ProjectInfo, plan: Plan, opts: Opts, iOpts: WizardInstrumentOpts): void {
+function applyPhase(cwd: string, project: ProjectInfo, plan: Plan, opts: Opts, iOpts: WizardInstrumentOpts, client: ServerClient): void {
   const result = apply(cwd, project, plan, iOpts);
   if (opts.delegated && result.delegatedModule) {
     const output = path.resolve(opts.delegated);
@@ -355,7 +365,38 @@ function applyPhase(cwd: string, project: ProjectInfo, plan: Plan, opts: Opts, i
     fs.writeFileSync(output, result.delegatedModule);
     console.log(`\n  wrote delegated listener ${cyan(output)}`);
   }
-  reportApplyResult(result);
+  reportApplyResult(result, client);
+}
+
+/** Picking outcomes always needs a server — no fully-offline mode. Resolve
+ *  --server/--api-key/env/config, and when no key is found, ask for one
+ *  interactively (saved for next time) or fail fast with instructions in CI. */
+async function resolveServerClient(cwd: string, opts: Opts): Promise<ServerClient | null> {
+  const resolved = resolveConfig(cwd, { server: opts.server, apiKey: opts.apiKey });
+  if (resolved.apiKey) return { server: resolved.server, apiKey: resolved.apiKey };
+
+  if (!process.stdin.isTTY) {
+    console.error(
+      `error: no Precedence API key configured for ${resolved.server}\n\n` +
+      "  set PRECEDENCE_API_KEY (and PRECEDENCE_SERVER for a BYOC deployment), or pass\n" +
+      "  --api-key <key> [--server <url>]. Create a project + key with:\n" +
+      "    npm run create-project -- \"<name>\"   (in your @precedence-dev/server checkout)\n",
+    );
+    process.exitCode = 2;
+    return null;
+  }
+
+  console.log(yellow(`\n  no API key found for ${resolved.server}.`));
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const apiKey = await new Promise<string>((resolve) =>
+    rl.question("  paste your Precedence API key (from your project settings): ", (a) => { rl.close(); resolve(a.trim()); }));
+  if (!apiKey) { console.error("error: an API key is required — nothing else to do."); process.exitCode = 2; return null; }
+
+  saveApiKey(resolved.server, apiKey);
+  if (!resolved.serverExplicit) console.log(dim(`  using the default server (${DEFAULT_SERVER}) — pass --server for BYOC.`));
+  else if (serverOrigin(resolved.server) !== serverOrigin(DEFAULT_SERVER)) writeProjectConfig(cwd, { server: resolved.server });
+  console.log(dim(`  saved to ~/.precedence/auth.json — won't ask again for this server.\n`));
+  return { server: resolved.server, apiKey };
 }
 
 async function main(): Promise<void> {
@@ -366,10 +407,14 @@ async function main(): Promise<void> {
 
   const cwd = process.cwd();
   console.log(bold("\nprecedence-wizard\n"));
+
+  const client = await resolveServerClient(cwd, opts);
+  if (!client) return;
+
   const project = detectProject(cwd);
   if (opts.dirs.length) project.srcDirs = opts.dirs;   // --dir overrides auto-detection (monorepos, non-standard layouts)
 
-  const plan = await resolvePlan(cwd, project, opts);
+  const plan = await resolvePlan(cwd, project, opts, client);
   if (!plan) return;
 
   const iOpts: WizardInstrumentOpts = { track: opts.track, types: opts.types };
@@ -377,7 +422,7 @@ async function main(): Promise<void> {
   if (!changed) return;
   if (!(await shouldApply(opts, changed.length))) return;
 
-  applyPhase(cwd, project, plan, opts, iOpts);
+  applyPhase(cwd, project, plan, opts, iOpts, client);
 }
 
 if (require.main === module) void main();

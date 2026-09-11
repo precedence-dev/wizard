@@ -1,14 +1,23 @@
 /**
  * @precedence-dev/wizard invariants: project detection, the in-process scan, the
- * --ci scaffold, apply, the local picker receiver (pick), and the CLI's own
- * arg/diff contract — end to end against throwaway directories. No VCS involved.
- * The only stub is auth (see README); nothing to test there yet.
+ * --ci scaffold, apply, pick() against a mock @precedence-dev/server, and the
+ * CLI's own arg/diff/config contract — end to end against throwaway
+ * directories. No VCS involved. `PRECEDENCE_HOME` isolates every spawned
+ * wizard process's ~/.precedence/auth.json from the real one.
  */
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
+
+// execFileSync blocks this process's event loop for as long as the child
+// runs — fatal when the child talks back to a mockServer() running in *this*
+// same process (the server can't accept the connection while we're
+// synchronously blocked waiting for the child to exit). Use this instead
+// whenever a test both spawns the wizard and runs a mock server.
+const execFileAsync = promisify(execFile);
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dist = (p) => pathToFileURL(path.resolve(here, "../dist", p)).href;
@@ -25,7 +34,49 @@ const check = (name, ok, detail) => {
   if (!ok) fails++;
 };
 
+/** a minimal stand-in for @precedence-dev/server's catalogs + sessions
+ *  routes — just enough for pick() / --ci to exercise the real HTTP contract
+ *  without a Postgres-backed server in the test run. */
+async function mockServer() {
+  const http = await import("node:http");
+  const sessions = new Map();
+  let nextSid = 1;
+  const server = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => { body += c; });
+    req.on("end", () => {
+      const send = (code, obj) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(obj)); };
+      if (req.method === "POST" && req.url === "/v1/catalogs") return send(200, { id: "cat_1", ingestedAt: new Date().toISOString() });
+      if (req.method === "POST" && req.url === "/v1/sessions") {
+        const sid = `sid_${nextSid++}`;
+        sessions.set(sid, { state: "open" });
+        return send(200, { sid, expiresAt: new Date(Date.now() + 60_000).toISOString() });
+      }
+      const plan = req.url.match(/^\/v1\/sessions\/([^/]+)\/plan$/);
+      if (req.method === "POST" && plan) {
+        const s = sessions.get(plan[1]);
+        if (!s) return send(404, { error: "no such session" });
+        s.state = "resolved";
+        s.plan = JSON.parse(body);
+        return send(200, { ok: true });
+      }
+      const status = req.url.match(/^\/v1\/sessions\/([^/]+)$/);
+      if (req.method === "GET" && status) {
+        const s = sessions.get(status[1]);
+        if (!s) return send(404, { error: "no such session" });
+        return send(200, { state: s.state, plan: s.plan });
+      }
+      send(404, { error: "not found" });
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { server, url: `http://127.0.0.1:${server.address().port}` };
+}
+
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pm-wizard-"));
+// an isolated ~/.precedence/auth.json for every spawned wizard process below,
+// so this run never reads or writes a real user's saved API keys.
+const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "pm-home-"));
 
 const FIXTURE = `import { useState } from "react";
 export function Checkout({ user }: { user: { id: string } | null }) {
@@ -117,8 +168,10 @@ check("cli: --track carries its value", parseArgs(["--track", "track from @/lib/
 check("cli: --dir is repeatable, overrides source-dir auto-detection",
   JSON.stringify(parseArgs(["--dir", "apps/web/src", "--dir", "packages/ui"]).dirs) === JSON.stringify(["apps/web/src", "packages/ui"])
     && JSON.stringify(parseArgs([]).dirs) === "[]");
-check("cli: --no-serve / -y / --app", parseArgs(["--no-serve"]).serve === false && parseArgs(["-y"]).yes === true
-  && parseArgs([]).serve === true && parseArgs(["--app", "http://localhost:4000"]).app === "http://localhost:4000");
+check("cli: --server / --api-key / -y / --app",
+  parseArgs(["--server", "https://precedence.acme.com"]).server === "https://precedence.acme.com"
+    && parseArgs(["--api-key", "pcs_x"]).apiKey === "pcs_x" && parseArgs(["-y"]).yes === true
+    && parseArgs(["--app", "http://localhost:4000"]).app === "http://localhost:4000");
 
 /* ---- the published binary actually runs main() (not just when run directly) ---- */
 {
@@ -130,49 +183,83 @@ check("cli: --no-serve / -y / --app", parseArgs(["--no-serve"]).serve === false 
     status === 0 && /USAGE/.test(out) && /--track/.test(out), JSON.stringify({ status, out: out.slice(0, 120) }));
 }
 
-/* ---- the wizard runs in a plain directory, no VCS required (--no-serve so it
-       bakes the picker and exits instead of waiting on a browser) ---- */
+/* ---- picking always requires a server: no key configured, non-interactive
+       (execFileSync has no TTY) -> a clear error, exit 2, nothing scanned into
+       a half-finished state ---- */
 {
+  const noKeyDir = fs.mkdtempSync(path.join(os.tmpdir(), "pm-nokey-"));
+  fs.writeFileSync(path.join(noKeyDir, "package.json"), JSON.stringify({ dependencies: { react: "^18.0.0" } }));
+  const bin = path.resolve(here, "../bin/precedence-wizard.js");
+  let out = "", status = 0;
+  try {
+    execFileSync("node", [bin, "--no-open"], {
+      cwd: noKeyDir, encoding: "utf8",
+      env: { ...process.env, PRECEDENCE_HOME: fakeHome, PRECEDENCE_API_KEY: "", PRECEDENCE_SERVER: "" },
+    });
+  } catch (e) { out = (e.stdout || "") + (e.stderr || ""); status = e.status ?? 1; }
+  check("cli: no API key configured, non-interactive -> exit 2 with instructions", status === 2 && /API key/.test(out));
+  fs.rmSync(noKeyDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
+
+/* ---- the wizard runs in a plain directory, no VCS required (--ci pushes the
+       catalog to the configured server and scaffolds a draft plan instead of
+       waiting on a browser) ---- */
+{
+  const { server, url } = await mockServer();
   const plainDir = fs.mkdtempSync(path.join(os.tmpdir(), "pm-nogit-"));
   fs.mkdirSync(path.join(plainDir, "src"));
   fs.writeFileSync(path.join(plainDir, "src", "Checkout.tsx"), FIXTURE);
   fs.writeFileSync(path.join(plainDir, "package.json"), JSON.stringify({ dependencies: { react: "^18.0.0" } }));
   const bin = path.resolve(here, "../bin/precedence-wizard.js");
   let out = "", status = 0;
-  try { out = execFileSync("node", [bin, "--no-serve", "--no-open"], { cwd: plainDir, encoding: "utf8" }); }
-  catch (e) { out = (e.stdout || "") + (e.stderr || ""); status = e.status ?? 1; }
-  check("cli: a scan in a non-git directory succeeds (exit 0, catalog + baked picker written)",
-    status === 0 && /attach point/.test(out)
+  try {
+    const r = await execFileAsync("node", [bin, "--ci", "--server", url, "--api-key", "test-key", "--no-open"], {
+      cwd: plainDir, encoding: "utf8", env: { ...process.env, PRECEDENCE_HOME: fakeHome },
+    });
+    out = r.stdout;
+  } catch (e) { out = (e.stdout || "") + (e.stderr || ""); status = e.code ?? 1; }
+  check("cli: a scan in a non-git directory succeeds (exit 0, catalog pushed + draft plan written)",
+    status === 0 && /attach point/.test(out) && /pushed catalog/.test(out)
       && fs.existsSync(path.join(plainDir, ".precedence", "catalog.pcs"))
-      && fs.existsSync(path.join(plainDir, ".precedence", "viewer.html")),
-    JSON.stringify({ status, out: out.slice(0, 160) }));
+      && fs.existsSync(path.join(plainDir, ".precedence", "plan.json")),
+    JSON.stringify({ status, out: out.slice(0, 300) }));
   fs.rmSync(plainDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  server.close();
 }
 
-/* ---- pick(): serves the picker and writes what the browser POSTs back ---- */
+/* ---- pick(): opens a session on the (mock) server and writes what the
+       browser overlay POSTs back to it ---- */
 {
   const { pick } = await import(dist("pick.js"));
+  const { server, url } = await mockServer();
+  const client = { server: url, apiKey: "test-key" };
   const pickDir = fs.mkdtempSync(path.join(os.tmpdir(), "pm-pick-"));
   fs.mkdirSync(path.join(pickDir, ".precedence"));
   const cat = { tool: "precedence", elements: [], attachPoints: 0 };
 
-  // capture stdout, then POST a plan the way the in-page agent would
+  // capture stdout so we can pull the session id out of "picker session: <sid>"
   const realWrite = process.stdout.write.bind(process.stdout);
   let sniffed = "";
   process.stdout.write = (s, ...a) => { sniffed += s; return realWrite(s, ...a); };
-  const pending = pick(pickDir, cat, { devUrl: "http://localhost:3000", open: false });
+  const pending = pick(pickDir, cat, { devUrl: "http://localhost:3000", open: false, client });
   await new Promise((r) => setTimeout(r, 80));
   process.stdout.write = realWrite;
 
-  check("pick: opens the app at ?precedence=pick&at=<server>", /localhost:3000\/\?precedence=pick&at=http%3A%2F%2F127\.0\.0\.1%3A\d+/.test(sniffed));
-  const url = (sniffed.match(/picker server: (http:\/\/127\.0\.0\.1:\d+)/) || [])[1] + "/";
+  const sid = (sniffed.match(/picker session: (\S+)/) || [])[1];
+  check("pick: opens the app at ?precedence=pick&at=<server>&s=<sid>",
+    !!sid && sniffed.includes(`localhost:3000/?precedence=pick&at=${encodeURIComponent(url)}&s=${encodeURIComponent(sid)}`));
+
+  // POST a plan the way the in-page agent (agent.js?s=<sid>) would
   const sent = { tool: "precedence-agent", events: [{ name: "e1", properties: [], anchors: [] }] };
-  await fetch(url + "plan", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sent) });
+  await fetch(`${url}/v1/sessions/${sid}/plan`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sent),
+  });
   const res = await pending;
   check("pick: resolves with the posted plan and writes it to .precedence/plan.json",
     res.plan.events.length === 1
       && JSON.parse(fs.readFileSync(path.join(pickDir, ".precedence", "plan.json"), "utf8")).events[0].name === "e1");
   fs.rmSync(pickDir, { recursive: true, force: true });
+  server.close();
 }
 
 /* ---- wire: one-time Next setup, without touching layout.tsx ---- */
@@ -180,11 +267,12 @@ check("cli: --no-serve / -y / --app", parseArgs(["--no-serve"]).serve === false 
   const wire = await import(dist("wire.js"));
   const w = fs.mkdtempSync(path.join(os.tmpdir(), "pm-wire-"));
 
-  const ic = wire.instrumentationClient(w);
-  check("wire: writes instrumentation-client.ts that calls precedencePicker() (no layout edit)",
+  const ic = wire.instrumentationClient(w, "precedence.acme.com");
+  check("wire: writes instrumentation-client.ts that calls precedencePicker() with the server allow-listed (no layout edit)",
     ic.status === "created" && ic.file === "instrumentation-client.ts"
-      && fs.readFileSync(path.join(w, "instrumentation-client.ts"), "utf8").includes("precedencePicker()"));
-  check("wire: re-running detects the existing file, doesn't overwrite", wire.instrumentationClient(w).status === "present");
+      && fs.readFileSync(path.join(w, "instrumentation-client.ts"), "utf8").includes('precedencePicker({ allow: ["precedence.acme.com"] })'));
+  check("wire: re-running detects the existing file, doesn't overwrite",
+    wire.instrumentationClient(w, "precedence.acme.com").status === "present");
 
   check("wire: nextConfig — none present", wire.nextConfig(w).file === null);
   fs.writeFileSync(path.join(w, "next.config.mjs"), "const nextConfig = {};\nexport default nextConfig;\n");
@@ -269,6 +357,7 @@ check("cli: --no-serve / -y / --app", parseArgs(["--no-serve"]).serve === false 
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });
+fs.rmSync(fakeHome, { recursive: true, force: true });
 
 console.log(fails ? `\n${fails} FAILED` : "\nall invariants hold");
 process.exit(fails ? 1 : 0);
