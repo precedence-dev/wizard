@@ -1,13 +1,25 @@
 name: Publish
 
-# Triggered only when the package's own version changes; JS-DevTools/npm-publish
-# additionally no-ops if that version is already on the registry — safe to
-# leave running on every push to main.
+# Triggered only when the package's own version changes.
+#
+# Uses npm's OIDC Trusted Publishing — no NPM_TOKEN secret at all. npm
+# verifies the OIDC claims (this exact repo + this exact workflow file) match
+# whatever's configured as the package's trusted publisher on npmjs.com, then
+# issues a short-lived publish token itself. One-time setup on npmjs.com:
+# package page -> Settings -> "Trusted Publisher" -> GitHub Actions -> org
+# "precedence-dev", repo "wizard", workflow ".github/workflows/publish.yml".
+#
+# The inline version check makes this idempotent (safe on every matching
+# push) without depending on a third-party action's OIDC support.
 on:
   push:
     branches: [main]
     paths:
       - "package.json"
+
+permissions:
+  contents: read
+  id-token: write # required to request the OIDC token for trusted publishing
 
 jobs:
   publish:
@@ -19,8 +31,18 @@ jobs:
           node-version: 22
           cache: npm
           registry-url: "https://registry.npmjs.org"
+      # trusted publishing needs a recent npm CLI; the one bundled with
+      # setup-node's Node version is often too old.
+      - run: npm install -g npm@latest
       - run: npm ci
       - run: npm test
-      - uses: JS-DevTools/npm-publish@v3
-        with:
-          token: ${{ secrets.NPM_TOKEN }}
+      - name: Publish if the version changed
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          PUBLISHED=$(npm view "$NAME" version 2>/dev/null || echo "")
+          if [ "$VERSION" != "$PUBLISHED" ]; then
+            npm publish
+          else
+            echo "$NAME@$VERSION is already published — skipping"
+          fi
